@@ -72,7 +72,6 @@ export function SettingsTab() {
     
     try {
       setLoading(true);
-      const folderPath = storagePath || defaultPath;
       
       // Delete all data files
       const dataFiles = ["workflows.json", "actions.json", "repos.json", "settings.json"];

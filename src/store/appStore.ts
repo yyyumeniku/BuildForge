@@ -119,6 +119,7 @@ export interface WorkflowNode {
     artifactPaths?: string;
     actionId?: string; // Reference to a LocalAction
     actionInputs?: Record<string, string>; // Input values for the action
+    commitMessage?: string; // Custom commit message
   };
 }
 

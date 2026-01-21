@@ -1100,7 +1100,7 @@ export function WorkflowsTab() {
               break;
               
             case "commit":
-              const commitMsg = `Build ${workflow.nextVersion}`;
+              const commitMsg = node.config.commitMessage || `Build ${workflow.nextVersion}`;
               addRunLog({ level: "info", message: `Committing changes in ${selectedRepo.path}` });
               addRunLog({ level: "command", message: `git add . && git commit -m "${commitMsg}"` });
               
@@ -1916,6 +1916,24 @@ export function WorkflowsTab() {
                       </div>
                     </div>
                   )}
+                </>
+              )}
+
+              {selectedNodeData.type === "commit" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Commit Message</label>
+                    <input
+                      type="text"
+                      value={selectedNodeData.config.commitMessage || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "commitMessage", e.target.value)}
+                      placeholder={`Build ${workflow?.nextVersion || "1.0.0"}`}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Leave empty to use default: "Build [version]"
+                    </p>
+                  </div>
                 </>
               )}
 
