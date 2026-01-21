@@ -1015,11 +1015,13 @@ export function WorkflowsTab() {
             case "build":
               addRunLog({ level: "info", message: "=== BUILD NODE START ===" });
               const buildCmd = node.config.command || detectBuildCommand(selectedRepo);
+              const targetOS = node.config.targetOS || "local";
               
               // Debug logging
               addRunLog({ level: "info", message: `Repository path: ${selectedRepo.path}` });
               addRunLog({ level: "info", message: `Detected build system: ${selectedRepo.detectedBuildSystem || 'NONE'}` });
               addRunLog({ level: "info", message: `Build command: ${buildCmd}` });
+              addRunLog({ level: "info", message: `Target platform: ${targetOS}` });
               
               if (!buildCmd || buildCmd.trim() === "") {
                 addRunLog({ level: "error", message: "No build command could be determined!" });
@@ -1031,7 +1033,92 @@ export function WorkflowsTab() {
               const cloneNode = sortedNodes.find(n => n.type === "clone" && n.config.buildDir);
               const buildDirectory = cloneNode?.config.buildDir || selectedRepo.path;
               
-              // Run build locally on this machine/server
+              // Determine where to run the build based on target OS
+              const runBuildOnPlatform = async (platform: string, cmd: string, args: string[], cwd: string) => {
+                // Check if we need to route to a different server or Docker
+                if (platform !== "local") {
+                  // Check for a matching server
+                  const matchingServer = servers.find(s => 
+                    s.status === "online" && 
+                    (s.targetOS === platform || s.targetOS === "any")
+                  );
+                  
+                  if (matchingServer && matchingServer.id !== "localhost") {
+                    addRunLog({ level: "info", message: `Routing build to server: ${matchingServer.name} (${matchingServer.targetOS})` });
+                    // In real implementation, would send build over WebSocket to remote server
+                    addRunLog({ level: "warn", message: "Remote server builds not yet implemented, falling back to Docker..." });
+                  }
+                  
+                  // Check for Docker container
+                  try {
+                    const containerName = `buildforge-${platform}-builder`;
+                    addRunLog({ level: "info", message: `Checking for Docker container: ${containerName}` });
+                    
+                    // Check if container exists and is running
+                    const containerCheck = await invoke<string>("run_command", {
+                      command: "docker",
+                      args: ["ps", "-a", "--filter", `name=${containerName}`, "--format", "{{.Status}}"],
+                      cwd: "/"
+                    });
+                    
+                    if (containerCheck && containerCheck.trim()) {
+                      addRunLog({ level: "info", message: `Found Docker container: ${containerCheck.trim()}` });
+                      
+                      // Start container if stopped
+                      if (!containerCheck.toLowerCase().includes("up")) {
+                        addRunLog({ level: "info", message: "Starting Docker container..." });
+                        await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["start", containerName],
+                          cwd: "/"
+                        });
+                      }
+                      
+                      // Copy source to container
+                      addRunLog({ level: "info", message: "Copying source to container..." });
+                      await invoke<string>("run_command", {
+                        command: "docker",
+                        args: ["cp", cwd, `${containerName}:/workspace/`],
+                        cwd: "/"
+                      });
+                      
+                      // Run build in container
+                      const workspaceName = cwd.split("/").pop();
+                      addRunLog({ level: "command", message: `docker exec ${containerName} ${cmd} ${args.join(" ")}` });
+                      const dockerResult = await invoke<string>("run_command", {
+                        command: "docker",
+                        args: ["exec", "-w", `/workspace/${workspaceName}`, containerName, cmd, ...args],
+                        cwd: "/"
+                      });
+                      
+                      // Copy artifacts back
+                      addRunLog({ level: "info", message: "Copying artifacts from container..." });
+                      await invoke<string>("run_command", {
+                        command: "docker",
+                        args: ["cp", `${containerName}:/workspace/${workspaceName}/.`, cwd],
+                        cwd: "/"
+                      });
+                      
+                      return dockerResult;
+                    } else {
+                      addRunLog({ level: "warn", message: `No Docker container for ${platform}. Create one in Servers tab.` });
+                      addRunLog({ level: "info", message: "Falling back to local build..." });
+                    }
+                  } catch (dockerError: any) {
+                    addRunLog({ level: "warn", message: `Docker not available: ${dockerError}` });
+                    addRunLog({ level: "info", message: "Falling back to local build..." });
+                  }
+                }
+                
+                // Run locally
+                return await invoke<string>("run_command", { 
+                  command: cmd,
+                  args: args,
+                  cwd: cwd
+                });
+              };
+              
+              // Run build (handles routing)
               addRunLog({ level: "command", message: `${buildCmd}` });
               addRunLog({ level: "info", message: `Working directory: ${buildDirectory}` });
               
@@ -1044,14 +1131,27 @@ export function WorkflowsTab() {
               addRunLog({ level: "info", message: `Arguments: [${buildArgs.join(', ')}]` });
               
               try {
-                addRunLog({ level: "info", message: "Invoking run_command..." });
-                const buildResult = await invoke<string>("run_command", { 
-                  command: buildCommand,
-                  args: buildArgs,
-                  cwd: buildDirectory
-                });
-                addRunLog({ level: "success", message: "Build output:" });
-                addRunLog({ level: "success", message: buildResult || "(no output)" });
+                addRunLog({ level: "info", message: "Invoking build..." });
+                
+                // If targeting all platforms, run on each
+                if (targetOS === "all") {
+                  const platforms = ["linux", "windows", "macos"];
+                  for (const platform of platforms) {
+                    addRunLog({ level: "info", message: `--- Building for ${platform} ---` });
+                    try {
+                      const result = await runBuildOnPlatform(platform, buildCommand, buildArgs, buildDirectory);
+                      addRunLog({ level: "success", message: `${platform} build output:` });
+                      addRunLog({ level: "success", message: result || "(no output)" });
+                    } catch (platformError: any) {
+                      addRunLog({ level: "warn", message: `${platform} build failed: ${platformError}` });
+                    }
+                  }
+                } else {
+                  const buildResult = await runBuildOnPlatform(targetOS, buildCommand, buildArgs, buildDirectory);
+                  addRunLog({ level: "success", message: "Build output:" });
+                  addRunLog({ level: "success", message: buildResult || "(no output)" });
+                }
+                
                 addRunLog({ level: "info", message: "=== BUILD NODE COMPLETE ===" });
                 
                 // Find build artifacts using custom pattern or auto-detect
@@ -1327,32 +1427,73 @@ export function WorkflowsTab() {
               
               // Now create release via GitHub API
               addRunLog({ level: "command", message: `Creating GitHub release ${tagName}...` });
-              const releaseResponse = await fetch(
-                `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/releases`,
+              
+              // First check if release already exists
+              const existingReleaseCheck = await fetch(
+                `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/releases/tags/${tagName}`,
                 {
-                  method: "POST",
                   headers: {
                     Authorization: `Bearer ${accessToken}`,
                     Accept: "application/vnd.github.v3+json",
-                    "Content-Type": "application/json",
                   },
-                  body: JSON.stringify({
-                    tag_name: `v${version}`,
-                    name: releaseName,
-                    body: `## Release v${version}\n\nAutomated release created by BuildForge\n\n### Changes\n- Built from ${selectedRepo.defaultBranch} branch`,
-                    draft: false,
-                    prerelease: false,
-                  }),
                 }
               );
               
-              if (!releaseResponse.ok) {
-                const error = await releaseResponse.text();
-                throw new Error(`Failed to create release: ${error}`);
+              let release;
+              if (existingReleaseCheck.ok) {
+                // Release exists - ask user what to do
+                release = await existingReleaseCheck.json();
+                addRunLog({ level: "warn", message: `Release ${tagName} already exists` });
+                addRunLog({ level: "info", message: `Using existing release: ${release.html_url}` });
+              } else {
+                // Create new release
+                const releaseResponse = await fetch(
+                  `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/releases`,
+                  {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${accessToken}`,
+                      Accept: "application/vnd.github.v3+json",
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      tag_name: tagName,
+                      name: releaseName,
+                      body: `## ${releaseName}\n\nAutomated release created by BuildForge\n\n### Changes\n- Built from ${selectedRepo.defaultBranch} branch`,
+                      draft: false,
+                      prerelease: false,
+                    }),
+                  }
+                );
+                
+                if (!releaseResponse.ok) {
+                  const error = await releaseResponse.text();
+                  // Check if it's a duplicate error
+                  if (error.includes("already_exists")) {
+                    addRunLog({ level: "warn", message: `Release already exists, fetching existing...` });
+                    const existingRelease = await fetch(
+                      `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/releases/tags/${tagName}`,
+                      {
+                        headers: {
+                          Authorization: `Bearer ${accessToken}`,
+                          Accept: "application/vnd.github.v3+json",
+                        },
+                      }
+                    );
+                    if (existingRelease.ok) {
+                      release = await existingRelease.json();
+                    } else {
+                      throw new Error(`Failed to create or fetch release: ${error}`);
+                    }
+                  } else {
+                    throw new Error(`Failed to create release: ${error}`);
+                  }
+                } else {
+                  release = await releaseResponse.json();
+                  addRunLog({ level: "success", message: `Release ${tagName} created!` });
+                }
               }
               
-              const release = await releaseResponse.json();
-              addRunLog({ level: "success", message: `Release v${version} created!` });
               addRunLog({ level: "info", message: `URL: ${release.html_url}` });
               
               // Try to find and upload artifacts
@@ -1761,6 +1902,24 @@ export function WorkflowsTab() {
                                 ? BUILD_SYSTEMS.find(b => b.system === selectedRepo.detectedBuildSystem)?.buildCmd 
                                 : "npm run build")}
                             </span>
+                            {node.config.targetOS && node.config.targetOS !== "local" && (
+                              <span className={`ml-2 text-xs px-1.5 py-0.5 rounded ${
+                                node.config.targetOS === "windows" ? "bg-blue-500/30 text-blue-300" :
+                                node.config.targetOS === "macos" ? "bg-purple-500/30 text-purple-300" :
+                                node.config.targetOS === "linux" ? "bg-orange-500/30 text-orange-300" :
+                                node.config.targetOS === "all" ? "bg-green-500/30 text-green-300" :
+                                "bg-slate-600 text-slate-300"
+                              }`}>
+                                {node.config.targetOS}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {node.type === "command" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-cyan-400 font-mono">
+                              $ {node.config.command || "<no command>"}
+                            </span>
                           </div>
                         )}
                       </div>
@@ -2086,7 +2245,7 @@ export function WorkflowsTab() {
                   <div className="p-3 bg-slate-700/30 rounded border border-slate-600 mb-3">
                     <div className="flex items-center gap-2 mb-1">
                       <Zap className="w-3 h-3 text-green-400" />
-                      <span className="text-xs font-medium text-slate-300">Local Build</span>
+                      <span className="text-xs font-medium text-slate-300">Build Configuration</span>
                     </div>
                     <p className="text-xs text-slate-500">
                       Build system: <span className="text-green-400 font-mono">{selectedRepo?.detectedBuildSystem || "will be detected"}</span>
@@ -2097,6 +2256,24 @@ export function WorkflowsTab() {
                   </div>
                   
                   <div>
+                    <label className="block text-xs text-slate-500 mb-1">Target Platform</label>
+                    <select
+                      value={selectedNodeData.config.targetOS || "local"}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "targetOS", e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                    >
+                      <option value="local">Local Machine</option>
+                      <option value="windows">Windows</option>
+                      <option value="macos">macOS</option>
+                      <option value="linux">Linux</option>
+                      <option value="all">All Platforms</option>
+                    </select>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Will route to matching server or Docker container
+                    </p>
+                  </div>
+                  
+                  <div className="mt-3">
                     <label className="block text-xs text-slate-500 mb-1">Build Command</label>
                     <input
                       type="text"
@@ -2106,7 +2283,7 @@ export function WorkflowsTab() {
                       className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
                     />
                     <p className="text-xs text-slate-500 mt-1">
-                      Leave empty to use auto-detected command. Runs on YOUR machine/server.
+                      Leave empty to use auto-detected command.
                     </p>
                   </div>
                   

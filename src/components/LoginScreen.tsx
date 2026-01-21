@@ -47,12 +47,9 @@ export function LoginScreen() {
       // Poll for authorization completion
       const pollInterval = setInterval(async () => {
         try {
-          console.log("Polling for device flow result...");
           const result = await invoke<{ access_token: string } | null>("poll_device_flow");
-          console.log("Poll result:", result);
           
           if (result && result.access_token) {
-            console.log("Got access token!");
             clearInterval(pollInterval);
 
             // Get user info

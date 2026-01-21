@@ -17,6 +17,7 @@ export interface Server {
   port: number;
   status: "online" | "offline" | "connecting";
   os: string;
+  targetOS: "windows" | "macos" | "linux" | "any"; // Which OS this server builds for
   lastSeen: string;
 }
 
@@ -120,6 +121,7 @@ export interface WorkflowNode {
     actionId?: string; // Reference to a LocalAction
     actionInputs?: Record<string, string>; // Input values for the action
     commitMessage?: string; // Custom commit message
+    targetOS?: "local" | "windows" | "macos" | "linux" | "all"; // Target platform for build
   };
 }
 

@@ -47,7 +47,7 @@ export function SettingsTab() {
           args: [folderPath],
           cwd: "/"
         });
-        console.log("Folder opened:", openCommand);
+        // Folder opened successfully
       }
     } catch (e) {
       console.error("Failed to open folder:", e);

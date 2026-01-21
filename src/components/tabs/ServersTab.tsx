@@ -1,7 +1,46 @@
 import { useEffect, useState, useRef } from "react";
-import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, AlertCircle, CheckCircle } from "lucide-react";
+import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, Cpu, HardDrive, MemoryStick, Monitor, User, Clock, Package, Box, ChevronDown, ChevronUp } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { invoke } from "@tauri-apps/api/tauri";
+
+// OS-specific ASCII art (like neofetch/fastfetch)
+const OS_ASCII: Record<string, string> = {
+  macos: `        .:'
+    __ :'__
+ .' \`__\`-'__\` \`.
+:__________.-'
+:_________:
+ :_________\`-;
+  \`.__.-.__.'`,
+  linux: `      .--.
+     |o_o |
+     |:_/ |
+    //   \\ \\
+   (|     | )
+  /'\\_   _/\`\\
+  \\___)=(___ /`,
+  windows: `████████████
+████████████
+████████████
+
+████████████
+████████████
+████████████`,
+  unknown: `    _____
+   /     \\
+  | () () |
+   \\  ^  /
+    |||||
+    |||||`,
+};
+
+interface DockerContainer {
+  id: string;
+  name: string;
+  os: "windows" | "linux";
+  status: "running" | "stopped" | "creating";
+  image: string;
+}
 
 interface ServerLog {
   timestamp: string;
@@ -9,15 +48,38 @@ interface ServerLog {
   message: string;
 }
 
+interface SystemInfo {
+  hostname: string;
+  os: string;
+  os_version: string;
+  arch: string;
+  cpu: string;
+  cpu_cores: number;
+  memory_total_gb: number;
+  memory_available_gb: number;
+  disk_total_gb: number;
+  disk_available_gb: number;
+  uptime_hours: number;
+  package_manager: string;
+  shell: string;
+  username: string;
+}
+
 export function ServersTab() {
   const { servers, setServers } = useAppStore();
   const [showAddModal, setShowAddModal] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [localServerRunning, setLocalServerRunning] = useState(true); // Auto-start enabled
-  const [newServer, setNewServer] = useState({ name: "", address: "", port: "9999" });
+  const [newServer, setNewServer] = useState({ name: "", address: "", port: "9999", targetOS: "any" as "windows" | "macos" | "linux" | "any" });
   const [serverLogs, setServerLogs] = useState<ServerLog[]>([]);
   const [showTerminal, setShowTerminal] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [loadingSystemInfo, setLoadingSystemInfo] = useState(true);
+  const [dockerContainers, setDockerContainers] = useState<DockerContainer[]>([]);
+  const [dockerEnabled, setDockerEnabled] = useState(false);
+  const [expandedServer, setExpandedServer] = useState<string | null>("localhost");
+  const [creatingContainer, setCreatingContainer] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const healthCheckInterval = useRef<NodeJS.Timeout | null>(null);
 
@@ -33,6 +95,8 @@ export function ServersTab() {
   useEffect(() => {
     addLog("info", "Initializing BuildForge client...");
     startLocalServer();
+    loadSystemInfo();
+    checkDockerAvailable();
     
     // Start health check interval
     healthCheckInterval.current = setInterval(checkAllServersHealth, 10000); // Every 10 seconds
@@ -43,6 +107,139 @@ export function ServersTab() {
       }
     };
   }, []);
+
+  const loadSystemInfo = async () => {
+    setLoadingSystemInfo(true);
+    try {
+      const info = await invoke<SystemInfo>("get_system_info");
+      setSystemInfo(info);
+      addLog("info", `System: ${info.os} ${info.os_version} (${info.arch})`);
+    } catch (error) {
+      console.error("Failed to load system info:", error);
+      addLog("error", "Failed to load system information");
+    } finally {
+      setLoadingSystemInfo(false);
+    }
+  };
+
+  // Check if Docker is available
+  const checkDockerAvailable = async () => {
+    try {
+      const result = await invoke<string>("run_command", { 
+        command: "docker", 
+        args: ["--version"],
+        cwd: "/"
+      });
+      if (result) {
+        setDockerEnabled(true);
+        addLog("info", "Docker detected: " + result.trim());
+        loadDockerContainers();
+      }
+    } catch {
+      setDockerEnabled(false);
+    }
+  };
+
+  // Load existing Docker containers
+  const loadDockerContainers = async () => {
+    try {
+      const result = await invoke<string>("run_command", {
+        command: "docker",
+        args: ["ps", "-a", "--filter", "label=buildforge", "--format", "{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}"],
+        cwd: "/"
+      });
+      
+      const containers: DockerContainer[] = result.split("\n")
+        .filter(line => line.trim())
+        .map(line => {
+          const [id, name, status, image] = line.split("|");
+          const isLinux = image?.includes("linux") || image?.includes("ubuntu") || image?.includes("debian") || image?.includes("alpine");
+          return {
+            id,
+            name,
+            os: isLinux ? "linux" as const : "windows" as const,
+            status: status?.toLowerCase().includes("up") ? "running" as const : "stopped" as const,
+            image
+          };
+        });
+      
+      setDockerContainers(containers);
+    } catch {
+      // Docker might not have any BuildForge containers yet
+    }
+  };
+
+  // Create a Docker container for cross-platform builds
+  const createDockerContainer = async (os: "windows" | "linux") => {
+    setCreatingContainer(os);
+    addLog("info", `Creating ${os} Docker container for cross-platform builds...`);
+    
+    try {
+      const image = os === "linux" 
+        ? "ubuntu:22.04" 
+        : "mcr.microsoft.com/windows/servercore:ltsc2022";
+      
+      const containerName = `buildforge-${os}-builder`;
+      
+      // Pull the image first
+      addLog("info", `Pulling ${image}...`);
+      await invoke<string>("run_command", {
+        command: "docker",
+        args: ["pull", image],
+        cwd: "/"
+      });
+      
+      // Create and start the container
+      addLog("info", `Creating container ${containerName}...`);
+      await invoke<string>("run_command", {
+        command: "docker",
+        args: [
+          "run", "-d",
+          "--name", containerName,
+          "--label", "buildforge",
+          "-v", "/tmp/buildforge:/workspace",
+          image,
+          os === "linux" ? "tail" : "ping",
+          os === "linux" ? "-f" : "-t",
+          os === "linux" ? "/dev/null" : "localhost"
+        ],
+        cwd: "/"
+      });
+      
+      addLog("success", `${os} Docker container created successfully!`);
+      loadDockerContainers();
+    } catch (error: any) {
+      addLog("error", `Failed to create ${os} container: ${error}`);
+    } finally {
+      setCreatingContainer(null);
+    }
+  };
+
+  // Delete a Docker container
+  const deleteDockerContainer = async (containerId: string, containerName: string) => {
+    addLog("info", `Removing container ${containerName}...`);
+    try {
+      await invoke<string>("run_command", {
+        command: "docker",
+        args: ["rm", "-f", containerId],
+        cwd: "/"
+      });
+      addLog("success", `Container ${containerName} removed`);
+      loadDockerContainers();
+    } catch (error: any) {
+      addLog("error", `Failed to remove container: ${error}`);
+    }
+  };
+
+  // Get OS type for ASCII art
+  const getOSType = (): string => {
+    if (!systemInfo) return "unknown";
+    const os = systemInfo.os.toLowerCase();
+    if (os.includes("macos") || os.includes("darwin")) return "macos";
+    if (os.includes("windows")) return "windows";
+    if (os.includes("linux") || os.includes("ubuntu") || os.includes("debian") || os.includes("fedora")) return "linux";
+    return "unknown";
+  };
 
   // Auto-scroll logs
   useEffect(() => {
@@ -112,10 +309,11 @@ export function ServersTab() {
       port: parseInt(newServer.port) || 9999,
       status: "offline" as const,
       os: "Unknown",
+      targetOS: newServer.targetOS,
       lastSeen: new Date().toISOString(),
     };
     setServers([...servers, server]);
-    setNewServer({ name: "", address: "", port: "9999" });
+    setNewServer({ name: "", address: "", port: "9999", targetOS: "any" });
     setShowAddModal(false);
   };
 
@@ -130,6 +328,11 @@ export function ServersTab() {
       setLocalServerRunning(true);
       addLog("success", "Local server started successfully on port 9876");
       
+      // Detect current OS
+      const currentOS = systemInfo?.os.toLowerCase().includes("macos") ? "macos" as const
+        : systemInfo?.os.toLowerCase().includes("windows") ? "windows" as const
+        : "linux" as const;
+      
       // Add/update localhost server in list
       const hasLocalhost = servers.some(s => s.id === "localhost");
       if (!hasLocalhost) {
@@ -139,13 +342,14 @@ export function ServersTab() {
           address: "localhost",
           port: 9876,
           status: "online" as const,
-          os: "Local",
+          os: systemInfo?.os || "Local",
+          targetOS: currentOS,
           lastSeen: new Date().toISOString(),
         };
         setServers([localServer, ...servers]);
       } else {
         setServers(servers.map(s => 
-          s.id === "localhost" ? { ...s, status: "online" as const } : s
+          s.id === "localhost" ? { ...s, status: "online" as const, os: systemInfo?.os || s.os, targetOS: currentOS } : s
         ));
       }
     } catch (error: any) {
@@ -225,31 +429,13 @@ export function ServersTab() {
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        {/* Server Status Banner */}
-        <div className={`mb-6 p-4 rounded-xl border ${
-          localServerRunning 
-            ? "bg-green-600/10 border-green-500/30" 
-            : "bg-yellow-600/10 border-yellow-500/30"
-        }`}>
-          <div className="flex items-center gap-3">
-            {localServerRunning ? (
-              <CheckCircle className="w-5 h-5 text-green-400" />
-            ) : (
-              <AlertCircle className="w-5 h-5 text-yellow-400" />
-            )}
-            <div className="flex-1">
-              <p className={`font-medium ${localServerRunning ? "text-green-400" : "text-yellow-400"}`}>
-                {localServerRunning ? "Local Server Running" : "No Active Server"}
-              </p>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {localServerRunning 
-                  ? "Builds will execute on this machine (localhost:9876)" 
-                  : "Start local server or connect to an external server"}
-              </p>
-            </div>
+        {/* Local Server Card with System Specs */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold text-white">Local Server</h2>
             <button
               onClick={localServerRunning ? stopLocalServer : startLocalServer}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
                 localServerRunning 
                   ? "bg-red-600 hover:bg-red-500 text-white" 
                   : "bg-green-600 hover:bg-green-500 text-white"
@@ -257,23 +443,225 @@ export function ServersTab() {
             >
               {localServerRunning ? (
                 <>
-                  <Square className="w-3 h-3" />
-                  Stop
+                  <Square className="w-4 h-4" />
+                  Stop Server
                 </>
               ) : (
                 <>
-                  <Play className="w-3 h-3" />
-                  Start
+                  <Play className="w-4 h-4" />
+                  Start Server
                 </>
               )}
             </button>
           </div>
+          
+          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+            {/* Server Header - Clickable */}
+            <button
+              onClick={() => setExpandedServer(expandedServer === "localhost" ? null : "localhost")}
+              className="w-full flex items-center gap-4 p-4 hover:bg-slate-700/50"
+            >
+              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                localServerRunning ? "bg-green-600/20" : "bg-slate-700"
+              }`}>
+                <ServerIcon className={`w-5 h-5 ${
+                  localServerRunning ? "text-green-400" : "text-slate-400"
+                }`} />
+              </div>
+              <div className="flex-1 text-left">
+                <div className="flex items-center gap-2">
+                  <p className="font-medium text-white">Local Server</p>
+                  <span className={`px-2 py-0.5 text-xs rounded ${
+                    localServerRunning ? "bg-green-500/20 text-green-400" : "bg-slate-600 text-slate-400"
+                  }`}>
+                    {localServerRunning ? "online" : "offline"}
+                  </span>
+                  <span className="px-2 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">
+                    {getOSType()}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-500 mt-0.5">localhost:9876</p>
+              </div>
+              {expandedServer === "localhost" ? (
+                <ChevronUp className="w-5 h-5 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-slate-400" />
+              )}
+            </button>
+            
+            {/* Expanded System Specs */}
+            {expandedServer === "localhost" && (
+              <div className="border-t border-slate-700 p-4 bg-slate-900/50">
+                <div className="flex items-start gap-6 font-mono">
+                  {/* OS-specific ASCII Art */}
+                  <pre className={`text-xs leading-tight whitespace-pre hidden lg:block ${
+                    getOSType() === "macos" ? "text-white" :
+                    getOSType() === "linux" ? "text-yellow-400" :
+                    getOSType() === "windows" ? "text-blue-400" :
+                    "text-slate-400"
+                  }`}>
+                    {OS_ASCII[getOSType()] || OS_ASCII.unknown}
+                  </pre>
+                  
+                  {/* System Info */}
+                  {loadingSystemInfo ? (
+                    <div className="flex-1 text-slate-500 text-sm">Loading system information...</div>
+                  ) : systemInfo ? (
+                    <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1 text-sm">
+                      <div className="flex items-center gap-2">
+                        <User className="w-4 h-4 text-cyan-400" />
+                        <span className="text-cyan-400 font-semibold">{systemInfo.username}@{systemInfo.hostname}</span>
+                      </div>
+                      <div className="text-slate-600 md:col-span-2">{"─".repeat(35)}</div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Monitor className="w-4 h-4 text-blue-400" />
+                        <span className="text-blue-400">OS:</span>
+                        <span className="text-white">{systemInfo.os} {systemInfo.os_version}</span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Cpu className="w-4 h-4 text-purple-400" />
+                        <span className="text-purple-400">CPU:</span>
+                        <span className="text-white">{systemInfo.cpu_cores} cores</span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <MemoryStick className="w-4 h-4 text-yellow-400" />
+                        <span className="text-yellow-400">RAM:</span>
+                        <span className="text-white">
+                          {systemInfo.memory_available_gb.toFixed(1)} / {systemInfo.memory_total_gb.toFixed(1)} GB
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <HardDrive className="w-4 h-4 text-orange-400" />
+                        <span className="text-orange-400">Disk:</span>
+                        <span className="text-white">
+                          {systemInfo.disk_available_gb.toFixed(1)} / {systemInfo.disk_total_gb.toFixed(1)} GB
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-pink-400" />
+                        <span className="text-pink-400">Uptime:</span>
+                        <span className="text-white">
+                          {systemInfo.uptime_hours >= 24 
+                            ? `${Math.floor(systemInfo.uptime_hours / 24)}d ${Math.floor(systemInfo.uptime_hours % 24)}h`
+                            : `${systemInfo.uptime_hours.toFixed(1)}h`
+                          }
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Package className="w-4 h-4 text-red-400" />
+                        <span className="text-red-400">Pkg:</span>
+                        <span className="text-white">{systemInfo.package_manager}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 text-red-400 text-sm">Failed to load system information</div>
+                  )}
+                </div>
+                
+                {/* Docker Support Section */}
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Box className="w-4 h-4 text-blue-400" />
+                      <span className="text-sm font-medium text-white">Docker Cross-Platform Builds</span>
+                      {dockerEnabled ? (
+                        <span className="px-2 py-0.5 text-xs rounded bg-green-500/20 text-green-400">Available</span>
+                      ) : (
+                        <span className="px-2 py-0.5 text-xs rounded bg-red-500/20 text-red-400">Not Installed</span>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {dockerEnabled ? (
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-400">
+                        Create Docker containers to build for other platforms. BuildForge will automatically use these when building for a target OS you don't have a native server for.
+                      </p>
+                      
+                      {/* Existing containers */}
+                      {dockerContainers.length > 0 && (
+                        <div className="space-y-2">
+                          {dockerContainers.map(container => (
+                            <div key={container.id} className="flex items-center justify-between p-2 bg-slate-800 rounded-lg">
+                              <div className="flex items-center gap-2">
+                                <Box className={`w-4 h-4 ${container.status === "running" ? "text-green-400" : "text-slate-400"}`} />
+                                <span className="text-sm text-white">{container.name}</span>
+                                <span className={`px-1.5 py-0.5 text-xs rounded ${
+                                  container.os === "linux" ? "bg-orange-500/20 text-orange-400" : "bg-blue-500/20 text-blue-400"
+                                }`}>
+                                  {container.os}
+                                </span>
+                                <span className={`px-1.5 py-0.5 text-xs rounded ${
+                                  container.status === "running" ? "bg-green-500/20 text-green-400" : "bg-slate-600 text-slate-400"
+                                }`}>
+                                  {container.status}
+                                </span>
+                              </div>
+                              <button
+                                onClick={() => deleteDockerContainer(container.id, container.name)}
+                                className="p-1.5 text-slate-500 hover:text-red-400"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      {/* Create new container buttons */}
+                      <div className="flex gap-2">
+                        {!dockerContainers.find(c => c.os === "linux") && (
+                          <button
+                            onClick={() => createDockerContainer("linux")}
+                            disabled={creatingContainer !== null}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-xs font-medium text-white disabled:opacity-50"
+                          >
+                            {creatingContainer === "linux" ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Plus className="w-3 h-3" />
+                            )}
+                            Add Linux Container
+                          </button>
+                        )}
+                        {!dockerContainers.find(c => c.os === "windows") && getOSType() !== "linux" && (
+                          <button
+                            onClick={() => createDockerContainer("windows")}
+                            disabled={creatingContainer !== null}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-medium text-white disabled:opacity-50"
+                          >
+                            {creatingContainer === "windows" ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Plus className="w-3 h-3" />
+                            )}
+                            Add Windows Container
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500">
+                      Install Docker to enable cross-platform builds without additional servers.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
+        {/* External Servers Section */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-2xl font-bold text-white">Build Servers</h2>
-            <p className="text-slate-400 mt-1">External servers that can execute workflows</p>
+            <h2 className="text-2xl font-bold text-white">External Servers</h2>
+            <p className="text-slate-400 mt-1">Remote servers that can execute workflows</p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -316,6 +704,17 @@ export function ServersTab() {
                     "bg-slate-600 text-slate-400"
                   }`}>
                     {server.status}
+                  </span>
+                  {/* Target OS Badge */}
+                  <span className={`px-2 py-0.5 text-xs rounded ${
+                    server.targetOS === "windows" ? "bg-blue-500/20 text-blue-400" :
+                    server.targetOS === "macos" ? "bg-purple-500/20 text-purple-400" :
+                    server.targetOS === "linux" ? "bg-orange-500/20 text-orange-400" :
+                    "bg-slate-600 text-slate-400"
+                  }`}>
+                    {server.targetOS === "windows" ? "Windows" :
+                     server.targetOS === "macos" ? "macOS" :
+                     server.targetOS === "linux" ? "Linux" : "Any OS"}
                   </span>
                   {server.id === selectedServerId && (
                     <span className="px-2 py-0.5 text-xs rounded bg-blue-500/20 text-blue-400">
@@ -382,16 +781,34 @@ export function ServersTab() {
                   className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
-              <div>
-                <label className="block text-sm text-slate-400 mb-1">Port</label>
-                <input
-                  type="text"
-                  value={newServer.port}
-                  onChange={(e) => setNewServer(prev => ({ ...prev, port: e.target.value }))}
-                  placeholder="9999"
-                  className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Port</label>
+                  <input
+                    type="text"
+                    value={newServer.port}
+                    onChange={(e) => setNewServer(prev => ({ ...prev, port: e.target.value }))}
+                    placeholder="9999"
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Target OS</label>
+                  <select
+                    value={newServer.targetOS}
+                    onChange={(e) => setNewServer(prev => ({ ...prev, targetOS: e.target.value as "windows" | "macos" | "linux" | "any" }))}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="any">Any OS</option>
+                    <option value="windows">Windows</option>
+                    <option value="macos">macOS</option>
+                    <option value="linux">Linux</option>
+                  </select>
+                </div>
               </div>
+              <p className="text-xs text-slate-500">
+                Target OS determines which platform builds this server handles. Set to "Any OS" for general-purpose servers.
+              </p>
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button

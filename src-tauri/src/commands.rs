@@ -713,7 +713,6 @@ pub async fn save_app_data(
     custom_path: Option<String>,
 ) -> Result<(), String> {
     use std::fs;
-    use tauri::Manager;
     
     let base_dir = if let Some(custom) = custom_path {
         std::path::PathBuf::from(custom)
@@ -865,5 +864,414 @@ pub async fn select_folder(window: tauri::Window) -> Result<Option<String>, Stri
         .pick_folder();
     
     Ok(folder.map(|p| p.to_string_lossy().to_string()))
+}
+
+// System Information Commands (fastfetch-style)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SystemInfo {
+    pub hostname: String,
+    pub os: String,
+    pub os_version: String,
+    pub arch: String,
+    pub cpu: String,
+    pub cpu_cores: u32,
+    pub memory_total_gb: f64,
+    pub memory_available_gb: f64,
+    pub disk_total_gb: f64,
+    pub disk_available_gb: f64,
+    pub uptime_hours: f64,
+    pub package_manager: String,
+    pub shell: String,
+    pub username: String,
+}
+
+#[tauri::command]
+pub async fn get_system_info() -> Result<SystemInfo, String> {
+    // Get hostname
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    
+    // Get username
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    
+    // Get OS info
+    let (os, os_version) = get_os_info();
+    
+    // Get architecture
+    let arch = std::env::consts::ARCH.to_string();
+    
+    // Get CPU info
+    let (cpu, cpu_cores) = get_cpu_info();
+    
+    // Get memory info
+    let (memory_total_gb, memory_available_gb) = get_memory_info();
+    
+    // Get disk info
+    let (disk_total_gb, disk_available_gb) = get_disk_info();
+    
+    // Get uptime
+    let uptime_hours = get_uptime_hours();
+    
+    // Get package manager
+    let package_manager = detect_package_manager();
+    
+    // Get shell
+    let shell = std::env::var("SHELL")
+        .or_else(|_| std::env::var("COMSPEC"))
+        .unwrap_or_else(|_| "unknown".to_string());
+    
+    Ok(SystemInfo {
+        hostname,
+        os,
+        os_version,
+        arch,
+        cpu,
+        cpu_cores,
+        memory_total_gb,
+        memory_available_gb,
+        disk_total_gb,
+        disk_available_gb,
+        uptime_hours,
+        package_manager,
+        shell,
+        username,
+    })
+}
+
+fn get_os_info() -> (String, String) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let version = Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        ("macOS".to_string(), version)
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+        let os_release = fs::read_to_string("/etc/os-release").unwrap_or_default();
+        let mut name = "Linux".to_string();
+        let mut version = "unknown".to_string();
+        
+        for line in os_release.lines() {
+            if line.starts_with("NAME=") {
+                name = line.trim_start_matches("NAME=").trim_matches('"').to_string();
+            } else if line.starts_with("VERSION_ID=") {
+                version = line.trim_start_matches("VERSION_ID=").trim_matches('"').to_string();
+            }
+        }
+        (name, version)
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("cmd")
+            .args(["/C", "ver"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "Windows".to_string());
+        
+        // Parse version from output like "Microsoft Windows [Version 10.0.22631.4317]"
+        let version = output
+            .split('[')
+            .nth(1)
+            .and_then(|s| s.strip_suffix(']'))
+            .map(|s| s.replace("Version ", ""))
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        ("Windows".to_string(), version)
+    }
+}
+
+fn get_cpu_info() -> (String, u32) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let cpu = Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        
+        let cores = Command::new("sysctl")
+            .args(["-n", "hw.ncpu"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0))
+            .unwrap_or(0);
+        
+        (cpu, cores)
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+        let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let mut cpu = "unknown".to_string();
+        let mut cores: u32 = 0;
+        
+        for line in cpuinfo.lines() {
+            if line.starts_with("model name") {
+                cpu = line.split(':').nth(1).map(|s| s.trim().to_string()).unwrap_or_else(|| "unknown".to_string());
+            }
+            if line.starts_with("processor") {
+                cores += 1;
+            }
+        }
+        (cpu, cores)
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let cpu = Command::new("wmic")
+            .args(["cpu", "get", "name"])
+            .output()
+            .map(|o| {
+                let output = String::from_utf8_lossy(&o.stdout);
+                output.lines().nth(1).unwrap_or("unknown").trim().to_string()
+            })
+            .unwrap_or_else(|_| "unknown".to_string());
+        
+        let cores = Command::new("wmic")
+            .args(["cpu", "get", "NumberOfLogicalProcessors"])
+            .output()
+            .map(|o| {
+                let output = String::from_utf8_lossy(&o.stdout);
+                output.lines().nth(1).unwrap_or("0").trim().parse::<u32>().unwrap_or(0)
+            })
+            .unwrap_or(0);
+        
+        (cpu, cores)
+    }
+}
+
+fn get_memory_info() -> (f64, f64) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let total = Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .map(|o| {
+                let bytes: u64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0);
+                bytes as f64 / 1024.0 / 1024.0 / 1024.0
+            })
+            .unwrap_or(0.0);
+        
+        // Get available memory from vm_stat
+        let vm_stat = Command::new("vm_stat")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        let mut free_pages: u64 = 0;
+        let mut inactive_pages: u64 = 0;
+        let page_size: u64 = 4096;
+        
+        for line in vm_stat.lines() {
+            if line.contains("Pages free:") {
+                free_pages = line.split(':').nth(1)
+                    .map(|s| s.trim().trim_end_matches('.').parse().unwrap_or(0))
+                    .unwrap_or(0);
+            } else if line.contains("Pages inactive:") {
+                inactive_pages = line.split(':').nth(1)
+                    .map(|s| s.trim().trim_end_matches('.').parse().unwrap_or(0))
+                    .unwrap_or(0);
+            }
+        }
+        
+        let available = ((free_pages + inactive_pages) * page_size) as f64 / 1024.0 / 1024.0 / 1024.0;
+        (total, available)
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+        let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let mut total: u64 = 0;
+        let mut available: u64 = 0;
+        
+        for line in meminfo.lines() {
+            if line.starts_with("MemTotal:") {
+                total = line.split_whitespace().nth(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+            } else if line.starts_with("MemAvailable:") {
+                available = line.split_whitespace().nth(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+            }
+        }
+        
+        (total as f64 / 1024.0 / 1024.0, available as f64 / 1024.0 / 1024.0)
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("wmic")
+            .args(["OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory", "/VALUE"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        let mut total: u64 = 0;
+        let mut free: u64 = 0;
+        
+        for line in output.lines() {
+            if line.starts_with("TotalVisibleMemorySize=") {
+                total = line.split('=').nth(1)
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+            } else if line.starts_with("FreePhysicalMemory=") {
+                free = line.split('=').nth(1)
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+            }
+        }
+        
+        (total as f64 / 1024.0 / 1024.0, free as f64 / 1024.0 / 1024.0)
+    }
+}
+
+fn get_disk_info() -> (f64, f64) {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::process::Command;
+        let output = Command::new("df")
+            .args(["-k", "/"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        if let Some(line) = output.lines().nth(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let total: u64 = parts[1].parse().unwrap_or(0);
+                let available: u64 = parts[3].parse().unwrap_or(0);
+                return (total as f64 / 1024.0 / 1024.0, available as f64 / 1024.0 / 1024.0);
+            }
+        }
+        (0.0, 0.0)
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("wmic")
+            .args(["logicaldisk", "where", "DeviceID='C:'", "get", "Size,FreeSpace", "/VALUE"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        let mut total: u64 = 0;
+        let mut free: u64 = 0;
+        
+        for line in output.lines() {
+            if line.starts_with("Size=") {
+                total = line.split('=').nth(1)
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+            } else if line.starts_with("FreeSpace=") {
+                free = line.split('=').nth(1)
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+            }
+        }
+        
+        (total as f64 / 1024.0 / 1024.0 / 1024.0, free as f64 / 1024.0 / 1024.0 / 1024.0)
+    }
+}
+
+fn get_uptime_hours() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let output = Command::new("sysctl")
+            .args(["-n", "kern.boottime"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        // Parse boottime like "{ sec = 1234567890, usec = 0 }"
+        if let Some(sec_str) = output.split("sec = ").nth(1) {
+            if let Some(sec) = sec_str.split(',').next() {
+                if let Ok(boot_time) = sec.trim().parse::<i64>() {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    return (now - boot_time) as f64 / 3600.0;
+                }
+            }
+        }
+        0.0
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+        let uptime = fs::read_to_string("/proc/uptime").unwrap_or_default();
+        uptime.split_whitespace().next()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|s| s / 3600.0)
+            .unwrap_or(0.0)
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("wmic")
+            .args(["os", "get", "LastBootUpTime", "/VALUE"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        // Parse time and calculate uptime (simplified)
+        0.0 // Windows uptime parsing is complex, return 0 for now
+    }
+}
+
+fn detect_package_manager() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "Homebrew".to_string()
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        if Command::new("apt").arg("--version").output().is_ok() {
+            "apt".to_string()
+        } else if Command::new("dnf").arg("--version").output().is_ok() {
+            "dnf".to_string()
+        } else if Command::new("pacman").arg("--version").output().is_ok() {
+            "pacman".to_string()
+        } else if Command::new("zypper").arg("--version").output().is_ok() {
+            "zypper".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        if Command::new("winget").arg("--version").output().is_ok() {
+            "winget".to_string()
+        } else if Command::new("choco").arg("--version").output().is_ok() {
+            "Chocolatey".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
 }
 

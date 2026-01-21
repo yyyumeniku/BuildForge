@@ -83,6 +83,8 @@ fn main() {
             commands::list_app_data_files,
             commands::ensure_directory,
             commands::select_folder,
+            commands::get_system_info,
+            commands::install_package,
         ])
         .on_window_event(|event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
