@@ -1,37 +1,46 @@
 import { useEffect, useState, useRef } from "react";
-import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, Cpu, HardDrive, MemoryStick, Monitor, User, Clock, Package, Box, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, Cpu, HardDrive, MemoryStick, Monitor, User, Clock, Package, Box, ChevronDown, ChevronUp, AlertTriangle, Download } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { invoke } from "@tauri-apps/api/tauri";
 
-// OS-specific ASCII art (like neofetch/fastfetch)
-const OS_ASCII: Record<string, string> = {
-  macos: `        .:'
-    __ :'__
- .' \`__\`-'__\` \`.
-:__________.-'
-:_________:
- :_________\`-;
-  \`.__.-.__.'`,
-  linux: `      .--.
-     |o_o |
-     |:_/ |
-    //   \\ \\
-   (|     | )
-  /'\\_   _/\`\\
-  \\___)=(___ /`,
-  windows: `████████████
-████████████
-████████████
-
-████████████
-████████████
-████████████`,
-  unknown: `    _____
-   /     \\
-  | () () |
-   \\  ^  /
-    |||||
-    |||||`,
+// OS-specific ASCII art (like neofetch/fastfetch) - using array for proper line display
+const OS_ASCII: Record<string, string[]> = {
+  macos: [
+    "        .:'        ",
+    "    __ :'__        ",
+    " .'`  `-'  `'.     ",
+    ":  .-'  '-.  :     ",
+    ":  :      :  :     ",
+    ":__:______:__:     ",
+    "    `------'       ",
+  ],
+  linux: [
+    "      .--.         ",
+    "     |o_o |        ",
+    "     |:_/ |        ",
+    "    //   \\ \\       ",
+    "   (|     | )      ",
+    "  /'\\_   _/`\\      ",
+    "  \\___)=(___/      ",
+  ],
+  windows: [
+    " ██████  ██████    ",
+    " ██████  ██████    ",
+    " ██████  ██████    ",
+    "                   ",
+    " ██████  ██████    ",
+    " ██████  ██████    ",
+    " ██████  ██████    ",
+  ],
+  unknown: [
+    "    _______        ",
+    "   /       \\       ",
+    "  |  ?   ? |       ",
+    "  |    ^   |       ",
+    "  |  \\___/ |       ",
+    "   \\_______/       ",
+    "                   ",
+  ],
 };
 
 interface DockerContainer {
@@ -226,8 +235,64 @@ export function ServersTab() {
       });
       addLog("success", `Container ${containerName} removed`);
       loadDockerContainers();
-    } catch (error: any) {
+    } catch (error: unknown) {
       addLog("error", `Failed to remove container: ${error}`);
+    }
+  };
+
+  // Install Docker based on OS package manager
+  const [installingDocker, setInstallingDocker] = useState(false);
+  
+  const installDocker = async () => {
+    if (!systemInfo) return;
+    
+    setInstallingDocker(true);
+    addLog("info", `Installing Docker using ${systemInfo.package_manager}...`);
+    
+    try {
+      const pkgManager = systemInfo.package_manager.toLowerCase();
+      let installCmd: { command: string; args: string[] };
+      
+      if (pkgManager.includes("brew") || pkgManager === "homebrew") {
+        // macOS with Homebrew
+        installCmd = { command: "brew", args: ["install", "--cask", "docker"] };
+        addLog("info", "Using Homebrew to install Docker Desktop...");
+      } else if (pkgManager.includes("apt")) {
+        // Debian/Ubuntu
+        installCmd = { command: "bash", args: ["-c", "curl -fsSL https://get.docker.com | sh"] };
+        addLog("info", "Using apt (get.docker.com) to install Docker...");
+      } else if (pkgManager.includes("dnf") || pkgManager.includes("yum")) {
+        // Fedora/RHEL
+        installCmd = { command: "bash", args: ["-c", "curl -fsSL https://get.docker.com | sh"] };
+        addLog("info", "Using dnf/yum (get.docker.com) to install Docker...");
+      } else if (pkgManager.includes("pacman")) {
+        // Arch Linux
+        installCmd = { command: "pacman", args: ["-S", "--noconfirm", "docker"] };
+        addLog("info", "Using pacman to install Docker...");
+      } else if (pkgManager.includes("choco") || pkgManager.includes("winget")) {
+        // Windows
+        installCmd = { command: "winget", args: ["install", "-e", "--id", "Docker.DockerDesktop"] };
+        addLog("info", "Using winget to install Docker Desktop...");
+      } else {
+        addLog("error", `Unsupported package manager: ${systemInfo.package_manager}. Please install Docker manually.`);
+        setInstallingDocker(false);
+        return;
+      }
+      
+      await invoke<string>("run_command", {
+        command: installCmd.command,
+        args: installCmd.args,
+        cwd: "/"
+      });
+      
+      addLog("success", "Docker installation command completed! You may need to restart the app or start Docker Desktop.");
+      // Re-check Docker availability after a short delay
+      setTimeout(() => checkDockerAvailable(), 3000);
+    } catch (error: unknown) {
+      addLog("error", `Failed to install Docker: ${error}`);
+      addLog("info", "Please install Docker manually from https://docker.com");
+    } finally {
+      setInstallingDocker(false);
     }
   };
 
@@ -494,14 +559,16 @@ export function ServersTab() {
               <div className="border-t border-slate-700 p-4 bg-slate-900/50">
                 <div className="flex items-start gap-6 font-mono">
                   {/* OS-specific ASCII Art */}
-                  <pre className={`text-xs leading-tight whitespace-pre hidden lg:block ${
+                  <div className={`text-xs leading-tight hidden lg:block ${
                     getOSType() === "macos" ? "text-white" :
                     getOSType() === "linux" ? "text-yellow-400" :
                     getOSType() === "windows" ? "text-blue-400" :
                     "text-slate-400"
                   }`}>
-                    {OS_ASCII[getOSType()] || OS_ASCII.unknown}
-                  </pre>
+                    {(OS_ASCII[getOSType()] || OS_ASCII.unknown).map((line, i) => (
+                      <div key={i} className="whitespace-pre">{line}</div>
+                    ))}
+                  </div>
                   
                   {/* System Info */}
                   {loadingSystemInfo ? (
@@ -580,6 +647,14 @@ export function ServersTab() {
                   
                   {dockerEnabled ? (
                     <div className="space-y-3">
+                      {/* Warning for local Docker usage */}
+                      <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                        <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+                        <div className="text-xs text-yellow-400">
+                          <span className="font-medium">Warning:</span> Running Docker containers on your local machine uses local resources. For production builds, consider using an external server for better performance and isolation.
+                        </div>
+                      </div>
+                      
                       <p className="text-xs text-slate-400">
                         Create Docker containers to build for other platforms. BuildForge will automatically use these when building for a target OS you don't have a native server for.
                       </p>
@@ -606,6 +681,7 @@ export function ServersTab() {
                               <button
                                 onClick={() => deleteDockerContainer(container.id, container.name)}
                                 className="p-1.5 text-slate-500 hover:text-red-400"
+                                title="Remove container"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -647,9 +723,26 @@ export function ServersTab() {
                       </div>
                     </div>
                   ) : (
-                    <p className="text-xs text-slate-500">
-                      Install Docker to enable cross-platform builds without additional servers.
-                    </p>
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-500">
+                        Docker is not installed. Install Docker to enable cross-platform builds without additional servers.
+                      </p>
+                      <button
+                        onClick={installDocker}
+                        disabled={installingDocker || !systemInfo}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-medium text-white disabled:opacity-50"
+                      >
+                        {installingDocker ? (
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Download className="w-3 h-3" />
+                        )}
+                        {installingDocker ? "Installing..." : `Install Docker (${systemInfo?.package_manager || "detect..."})`}
+                      </button>
+                      <p className="text-xs text-slate-600">
+                        Or install manually from <a href="https://docker.com" target="_blank" className="text-blue-400 hover:underline">docker.com</a>
+                      </p>
+                    </div>
                   )}
                 </div>
               </div>

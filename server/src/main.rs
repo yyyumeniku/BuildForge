@@ -262,7 +262,36 @@ async fn handle_connection(
     data_dir: PathBuf,
     shared_data: SharedData,
 ) -> Result<()> {
-    let ws_stream = accept_async(stream).await?;
+    use tokio::io::AsyncWriteExt;
+    
+    // Peek at the first bytes to check if it's an HTTP request
+    let mut peek_buf = [0u8; 256];
+    stream.peek(&mut peek_buf).await?;
+    let peek_str = String::from_utf8_lossy(&peek_buf);
+    
+    // Check if this is a plain HTTP health check request
+    if peek_str.contains("GET /health") || peek_str.contains("HEAD /health") {
+        // Read and discard the HTTP request
+        let mut buf = vec![0u8; 1024];
+        let _ = stream.try_read(&mut buf);
+        
+        // Send HTTP 200 OK response
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"status\":\"ok\"}";
+        let mut stream = stream;
+        stream.write_all(response.as_bytes()).await?;
+        stream.flush().await?;
+        info!("Handled HTTP health check request");
+        return Ok(());
+    }
+    
+    // Try WebSocket handshake
+    let ws_stream = match accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            // Not a valid WebSocket request - this is expected for some HTTP probes
+            return Err(anyhow::anyhow!("WebSocket handshake failed: {}", e));
+        }
+    };
     let (mut write, mut read) = ws_stream.split();
     
     info!("WebSocket connection established");
@@ -452,7 +481,7 @@ async fn execute_build(
                     .and_then(|v| v.as_str())
                     .unwrap_or("bash");
                 
-                run_script(script, shell, &workdir, build_id).await?;
+                run_script_with_shell(script, shell, &workdir, build_id).await?;
             }
             "artifact" => {
                 let path_pattern = node.config.get("path")
@@ -536,7 +565,7 @@ async fn run_command(command: &str, cwd: &str, build_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_script(script: &str, shell: &str, workdir: &PathBuf, build_id: &str) -> Result<()> {
+async fn run_script_with_shell(script: &str, shell: &str, workdir: &PathBuf, build_id: &str) -> Result<()> {
     info!("[{}] Running script with {}", build_id, shell);
     
     let script_path = workdir.join(format!(".buildforge-{}.sh", build_id));
