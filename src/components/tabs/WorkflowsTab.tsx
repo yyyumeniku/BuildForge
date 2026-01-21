@@ -1,0 +1,2185 @@
+import { useRef, useState, useCallback, useEffect } from "react";
+import { Plus, Play, Trash2, GitBranch, Package, TestTube, Upload, GitCommit, Download, X, StopCircle, ChevronDown, Loader2, GitBranchPlus, Zap, Terminal } from "lucide-react";
+import { useAppStore, type WorkflowNode, type WorkflowConnection, type LocalRepo, type BuildSystem, type RunLogEntry } from "../../store/appStore";
+import { invoke } from "@tauri-apps/api/tauri";
+
+// Node type definitions with full info
+const NODE_TYPES = [
+  { 
+    id: "clone", 
+    name: "Clone Repository", 
+    icon: Download, 
+    color: "#3b82f6",
+    description: "Clone from GitHub to local/server",
+    inputs: ["trigger"],
+    outputs: ["repo"]
+  },
+  { 
+    id: "pull", 
+    name: "Pull Updates", 
+    icon: Download, 
+    color: "#0ea5e9",
+    description: "Fetch and sync local repo with remote",
+    inputs: ["repo"],
+    outputs: ["repo"]
+  },
+  { 
+    id: "sync_push", 
+    name: "Sync & Push", 
+    icon: Upload, 
+    color: "#3b82f6",
+    description: "Pull remote changes, then push local commits",
+    inputs: ["repo"],
+    outputs: ["repo"]
+  },
+  { 
+    id: "push", 
+    name: "Push", 
+    icon: Upload, 
+    color: "#6366f1",
+    description: "Push local commits to remote",
+    inputs: ["repo"],
+    outputs: ["repo"]
+  },
+  { 
+    id: "checkout", 
+    name: "Checkout Branch", 
+    icon: GitBranch, 
+    color: "#06b6d4",
+    description: "Switch to a specific branch or tag",
+    inputs: ["repo"],
+    outputs: ["repo"]
+  },
+  { 
+    id: "build", 
+    name: "Build Project", 
+    icon: Package, 
+    color: "#10b981",
+    description: "Run build locally (npm, cargo, wails, etc.)",
+    inputs: ["repo"],
+    outputs: ["artifacts"]
+  },
+  { 
+    id: "test", 
+    name: "Run Tests", 
+    icon: TestTube, 
+    color: "#f59e0b",
+    description: "Execute test suite locally",
+    inputs: ["repo"],
+    outputs: ["results"]
+  },
+  { 
+    id: "action", 
+    name: "Run Action", 
+    icon: Zap, 
+    color: "#a855f7",
+    description: "Execute a local action script",
+    inputs: ["repo"],
+    outputs: ["result"]
+  },
+  { 
+    id: "commit", 
+    name: "Commit Changes", 
+    icon: GitCommit, 
+    color: "#ec4899",
+    description: "Stage and commit changes to the repository",
+    inputs: ["repo"],
+    outputs: ["repo"]
+  },
+  { 
+    id: "deploy", 
+    name: "Create Release", 
+    icon: Upload, 
+    color: "#8b5cf6",
+    description: "Create GitHub release with local build artifacts",
+    inputs: ["artifacts"],
+    outputs: []
+  },
+];
+
+// Build system detection patterns
+const BUILD_SYSTEMS: { system: BuildSystem; files: string[]; buildCmd: string; testCmd: string }[] = [
+  { system: "npm", files: ["package.json", "package-lock.json"], buildCmd: "npm run build", testCmd: "npm test" },
+  { system: "yarn", files: ["yarn.lock"], buildCmd: "yarn build", testCmd: "yarn test" },
+  { system: "pnpm", files: ["pnpm-lock.yaml"], buildCmd: "pnpm build", testCmd: "pnpm test" },
+  { system: "cargo", files: ["Cargo.toml"], buildCmd: "cargo build --release", testCmd: "cargo test" },
+  { system: "go", files: ["go.mod"], buildCmd: "go build ./...", testCmd: "go test ./..." },
+  { system: "gradle", files: ["build.gradle", "build.gradle.kts"], buildCmd: "./gradlew build", testCmd: "./gradlew test" },
+  { system: "maven", files: ["pom.xml"], buildCmd: "mvn package", testCmd: "mvn test" },
+  { system: "cmake", files: ["CMakeLists.txt"], buildCmd: "cmake --build .", testCmd: "ctest" },
+  { system: "make", files: ["Makefile"], buildCmd: "make", testCmd: "make test" },
+  { system: "python", files: ["setup.py", "pyproject.toml"], buildCmd: "pip install -e .", testCmd: "pytest" },
+  { system: "dotnet", files: ["*.csproj", "*.fsproj"], buildCmd: "dotnet build", testCmd: "dotnet test" },
+];
+
+interface Position { x: number; y: number; }
+
+// Terminal component for workflow runs
+function WorkflowTerminal({ 
+  logs, 
+  isRunning, 
+  onClose,
+  onStop 
+}: { 
+  logs: RunLogEntry[]; 
+  isRunning: boolean;
+  onClose: () => void;
+  onStop: () => void;
+}) {
+  const terminalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  const getLevelColor = (level: RunLogEntry["level"]) => {
+    switch (level) {
+      case "error": return "text-red-400";
+      case "warn": return "text-yellow-400";
+      case "success": return "text-green-400";
+      case "command": return "text-cyan-400";
+      default: return "text-slate-300";
+    }
+  };
+
+  const getLevelPrefix = (level: RunLogEntry["level"]) => {
+    switch (level) {
+      case "error": return "✗";
+      case "warn": return "⚠";
+      case "success": return "✓";
+      case "command": return "$";
+      default: return "›";
+    }
+  };
+
+  return (
+    <div className="h-64 bg-slate-950 border-t border-slate-700 flex flex-col">
+      <div className="h-8 bg-slate-900 border-b border-slate-700 flex items-center justify-between px-3">
+        <div className="flex items-center gap-2">
+          {isRunning && <Loader2 className="w-3 h-3 animate-spin text-green-400" />}
+          <span className="text-xs text-slate-400 font-medium">
+            {isRunning ? "Running Workflow..." : "Workflow Output"}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          {isRunning && (
+            <button
+              onClick={onStop}
+              className="p-1 hover:bg-red-500/20 rounded text-red-400"
+              title="Stop"
+            >
+              <StopCircle className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-slate-700 rounded text-slate-400"
+            title="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div 
+        ref={terminalRef}
+        className="flex-1 overflow-auto p-3 font-mono text-sm"
+      >
+        {logs.map((log, i) => (
+          <div key={i} className={`${getLevelColor(log.level)} flex gap-2`}>
+            <span className="opacity-50 select-none">
+              {new Date(log.timestamp).toLocaleTimeString()}
+            </span>
+            <span className="select-none">{getLevelPrefix(log.level)}</span>
+            <span className="flex-1">{log.message}</span>
+          </div>
+        ))}
+        {logs.length === 0 && (
+          <div className="text-slate-500">No output yet. Press Run to start the workflow.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Repo selector dropdown
+function RepoSelector({ 
+  selectedRepoId, 
+  onSelect 
+}: { 
+  selectedRepoId: string | null;
+  onSelect: (repoId: string | null) => void;
+}) {
+  const { repos } = useAppStore();
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedRepo = repos.find(r => r.id === selectedRepoId);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-white text-sm min-w-[180px]"
+      >
+        <GitBranch className="w-4 h-4 text-slate-400" />
+        <span className="flex-1 text-left truncate">
+          {selectedRepo ? `${selectedRepo.owner}/${selectedRepo.repo}` : "Select Repository"}
+        </span>
+        <ChevronDown className="w-4 h-4 text-slate-400" />
+      </button>
+      
+      {isOpen && (
+        <>
+          <div 
+            className="fixed inset-0 z-40" 
+            onClick={() => setIsOpen(false)}
+          />
+          <div className="absolute top-full left-0 mt-1 w-64 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-auto" onWheel={(e) => e.stopPropagation()}>
+            {repos.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-slate-500">
+                No repositories added yet. Add one in the Releases tab.
+              </div>
+            ) : (
+              repos.map(repo => (
+                <button
+                  key={repo.id}
+                  onClick={() => {
+                    onSelect(repo.id);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 hover:bg-slate-700 ${
+                    selectedRepoId === repo.id ? "bg-slate-700" : ""
+                  }`}
+                >
+                  <div className="text-sm text-white">
+                    {repo.owner}/{repo.repo}
+                  </div>
+                  <div className="text-xs text-slate-500 truncate">{repo.path}</div>
+                  {repo.latestVersion && (
+                    <div className="text-xs text-green-400 font-mono mt-0.5">
+                      Latest: {repo.latestVersion}
+                    </div>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function WorkflowsTab() {
+  const { 
+    servers, 
+    repos,
+    workflows,
+    selectedWorkflowId,
+    currentRun,
+    accessToken,
+    localActions,
+    addWorkflow,
+    updateWorkflow,
+    removeWorkflow,
+    selectWorkflow,
+    renameWorkflow,
+    startWorkflowRun,
+    addRunLog,
+    updateRun,
+    endWorkflowRun,
+    clearCurrentRun,
+    updateRepo,
+    saveHistory,
+  } = useAppStore();
+  
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [draggingNode, setDraggingNode] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState<Position>({ x: 0, y: 0 });
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const [connecting, setConnecting] = useState<{ nodeId: string; isOutput: boolean; startPos: Position } | null>(null);
+  const [mousePos, setMousePos] = useState<Position>({ x: 0, y: 0 });
+  const [canvasOffset, setCanvasOffset] = useState<Position>({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
+  const [showCreateBranch, setShowCreateBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState<Position>({ x: 0, y: 0 });
+  const [rightClickStart, setRightClickStart] = useState<Position | null>(null);
+  const [editingWorkflowId, setEditingWorkflowId] = useState<string | null>(null);
+  const [editingWorkflowName, setEditingWorkflowName] = useState("");
+
+  const workflow = workflows.find(w => w.id === selectedWorkflowId);
+  const onlineServers = servers.filter(s => s.status === "online");
+  const selectedRepo = workflow?.repoId ? repos.find(r => r.id === workflow.repoId) : null;
+
+  // Fetch branches when repo changes
+  useEffect(() => {
+    if (selectedRepo?.owner && selectedRepo?.repo && accessToken) {
+      fetchBranches(selectedRepo.owner, selectedRepo.repo);
+    }
+  }, [selectedRepo?.id, accessToken]);
+
+  const fetchBranches = async (owner: string, repo: string) => {
+    setLoadingBranches(true);
+    try {
+      const response = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/vnd.github.v3+json",
+          },
+        }
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        const branchNames = data.map((b: { name: string }) => b.name);
+        setBranches(branchNames);
+        
+        // Update repo with branches
+        if (selectedRepo) {
+          updateRepo(selectedRepo.id, { branches: branchNames });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch branches:", e);
+    } finally {
+      setLoadingBranches(false);
+    }
+  };
+
+  const createBranch = async () => {
+    if (!selectedRepo?.owner || !selectedRepo?.repo || !accessToken || !newBranchName.trim()) return;
+    
+    try {
+      // Get the SHA of the default branch
+      const refResponse = await fetch(
+        `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/git/ref/heads/${selectedRepo.defaultBranch || "main"}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/vnd.github.v3+json",
+          },
+        }
+      );
+      
+      if (!refResponse.ok) throw new Error("Failed to get reference");
+      
+      const refData = await refResponse.json();
+      const sha = refData.object.sha;
+      
+      // Create the new branch
+      const createResponse = await fetch(
+        `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/git/refs`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            ref: `refs/heads/${newBranchName.trim()}`,
+            sha,
+          }),
+        }
+      );
+      
+      if (createResponse.ok) {
+        // Refresh branches
+        await fetchBranches(selectedRepo.owner, selectedRepo.repo);
+        setNewBranchName("");
+        setShowCreateBranch(false);
+      } else {
+        const error = await createResponse.json();
+        alert(`Failed to create branch: ${error.message}`);
+      }
+    } catch (e) {
+      console.error("Failed to create branch:", e);
+      alert("Failed to create branch");
+    }
+  };
+
+  // Handle repo selection
+  const handleRepoSelect = (repoId: string | null) => {
+    if (!workflow) return;
+    
+    const repo = repos.find(r => r.id === repoId);
+    updateWorkflow(workflow.id, { 
+      repoId,
+      name: repo ? `${repo.owner}/${repo.repo}` : "New Workflow",
+      nextVersion: repo?.nextVersion || "1.0.0",
+    });
+  };
+
+  // Handle right-click context menu (only if not dragging)
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    
+    // Check if this was a drag or a click
+    if (rightClickStart) {
+      const distance = Math.sqrt(
+        Math.pow(e.clientX - rightClickStart.x, 2) + 
+        Math.pow(e.clientY - rightClickStart.y, 2)
+      );
+      
+      // If mouse moved more than 5 pixels, it was a drag, not a click
+      if (distance > 5) {
+        setRightClickStart(null);
+        return;
+      }
+    }
+    
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect) {
+      setContextMenu({
+        x: (e.clientX - rect.left - canvasOffset.x) / zoom,
+        y: (e.clientY - rect.top - canvasOffset.y) / zoom,
+      });
+    }
+    setRightClickStart(null);
+  }, [canvasOffset, zoom, rightClickStart]);
+
+  // Add node at context menu position
+  const addNode = (type: string) => {
+    if (!workflow || !contextMenu) return;
+    
+    const newNode: WorkflowNode = {
+      id: `node_${Date.now()}`,
+      type,
+      position: { x: contextMenu.x, y: contextMenu.y },
+      config: {},
+    };
+
+    // Set default config for different node types
+    if (type === "deploy") {
+      newNode.config.version = workflow.nextVersion;
+      newNode.config.releaseName = `Release ${workflow.nextVersion}`;
+    }
+    
+    if (type === "checkout") {
+      newNode.config.branch = selectedRepo?.defaultBranch || "main";
+    }
+    
+    if (type === "build" && selectedRepo?.detectedBuildSystem) {
+      const buildInfo = BUILD_SYSTEMS.find(b => b.system === selectedRepo.detectedBuildSystem);
+      if (buildInfo) {
+        newNode.config.buildSystem = buildInfo.system;
+        newNode.config.command = buildInfo.buildCmd;
+      }
+    }
+
+    updateWorkflow(workflow.id, { 
+      nodes: [...workflow.nodes, newNode] 
+    });
+    saveHistory(); // Save after adding node
+    setContextMenu(null);
+  };
+
+  // Start dragging node
+  const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    
+    const node = workflow?.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    setDraggingNode(nodeId);
+    setSelectedNode(nodeId);
+    
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect) {
+      setDragOffset({
+        x: (e.clientX - rect.left - canvasOffset.x) / zoom - node.position.x,
+        y: (e.clientY - rect.top - canvasOffset.y) / zoom - node.position.y,
+      });
+    }
+  };
+
+  // Handle mouse move for dragging
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    
+    const x = (e.clientX - rect.left - canvasOffset.x) / zoom;
+    const y = (e.clientY - rect.top - canvasOffset.y) / zoom;
+    setMousePos({ x, y });
+    
+    if (isPanning) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      setCanvasOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+      setPanStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
+    
+    if (draggingNode && workflow) {
+      const newX = x - dragOffset.x;
+      const newY = y - dragOffset.y;
+      
+      updateWorkflow(workflow.id, {
+        nodes: workflow.nodes.map(n => 
+          n.id === draggingNode 
+            ? { ...n, position: { x: newX, y: newY } }
+            : n
+        ),
+      });
+    }
+  }, [draggingNode, dragOffset, canvasOffset, zoom, workflow, updateWorkflow, isPanning, panStart]);
+
+  // Handle mouse up
+  const handleMouseUp = () => {
+    if (draggingNode) {
+      saveHistory(); // Save after moving node
+    }
+    setDraggingNode(null);
+    setConnecting(null);
+    setIsPanning(false);
+    setRightClickStart(null);
+  };
+
+  // Delete selected node
+  const deleteNode = (nodeId: string) => {
+    if (!workflow) return;
+    
+    updateWorkflow(workflow.id, {
+      nodes: workflow.nodes.filter(n => n.id !== nodeId),
+      connections: workflow.connections.filter(c => c.from !== nodeId && c.to !== nodeId),
+    });
+    saveHistory(); // Save after deleting node
+    setSelectedNode(null);
+    setNodeContextMenu(null);
+  };
+
+  // Replace a node with a different type
+  const replaceNode = (nodeId: string, newType: string) => {
+    if (!workflow) return;
+    
+    const oldNode = workflow.nodes.find(n => n.id === nodeId);
+    if (!oldNode) return;
+
+    const newNode: WorkflowNode = {
+      ...oldNode,
+      type: newType,
+      config: {}, // Reset config for new type
+    };
+
+    // Set default config for specific node types
+    if (newType === "deploy") {
+      newNode.config.version = workflow.nextVersion;
+      newNode.config.releaseName = `Release ${workflow.nextVersion}`;
+    }
+
+    updateWorkflow(workflow.id, {
+      nodes: workflow.nodes.map(n => n.id === nodeId ? newNode : n),
+    });
+    saveHistory();
+    setNodeContextMenu(null);
+  };
+
+  // Delete a connection
+  const deleteConnection = (connId: string) => {
+    if (!workflow) return;
+    
+    updateWorkflow(workflow.id, {
+      connections: workflow.connections.filter(c => c.id !== connId),
+    });
+  };
+
+  // Start connection from port
+  const startConnection = (nodeId: string, isOutput: boolean, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const node = workflow?.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    
+    const startPos = {
+      x: node.position.x + (isOutput ? 200 : 0),
+      y: node.position.y + 40,
+    };
+    
+    setConnecting({ nodeId, isOutput, startPos });
+  };
+
+  // Complete connection
+  const completeConnection = (nodeId: string, isInput: boolean) => {
+    if (!connecting || !workflow) return;
+    if (connecting.isOutput && isInput && connecting.nodeId !== nodeId) {
+      // Check if connection already exists
+      const exists = workflow.connections.some(
+        c => c.from === connecting.nodeId && c.to === nodeId
+      );
+      
+      if (!exists) {
+        const newConnection: WorkflowConnection = {
+          id: `conn_${Date.now()}`,
+          from: connecting.nodeId,
+          to: nodeId,
+        };
+        updateWorkflow(workflow.id, {
+          connections: [...workflow.connections, newConnection],
+        });
+        saveHistory(); // Save after creating connection
+      }
+    }
+    setConnecting(null);
+  };
+
+  // Update node config
+  const updateNodeConfig = (nodeId: string, key: string, value: string | Record<string, string>) => {
+    if (!workflow) return;
+    
+    updateWorkflow(workflow.id, {
+      nodes: workflow.nodes.map(n => 
+        n.id === nodeId 
+          ? { ...n, config: { ...n.config, [key]: value } }
+          : n
+      ),
+    });
+  };
+
+  // Handle zoom - works with regular scroll, stays centered
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    
+    const delta = e.deltaY > 0 ? 0.95 : 1.05;
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    setZoom(prevZoom => {
+      const newZoom = Math.min(2, Math.max(0.25, prevZoom * delta));
+      const zoomChange = newZoom / prevZoom;
+      
+      // Adjust offset to zoom toward mouse position
+      setCanvasOffset(prev => ({
+        x: mouseX - (mouseX - prev.x) * zoomChange,
+        y: mouseY - (mouseY - prev.y) * zoomChange,
+      }));
+      
+      return newZoom;
+    });
+  }, []);
+
+  // Pan canvas with left mouse drag, right-click for context menu
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) { // Left mouse for panning
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY });
+      setSelectedNode(null); // Deselect node when clicking canvas
+      setNodeContextMenu(null); // Close node context menu
+    } else if (e.button === 2) {
+      // Right click saves position for context menu
+      e.preventDefault();
+      setRightClickStart({ x: e.clientX, y: e.clientY });
+      setContextMenu(null);
+      setNodeContextMenu(null);
+    }
+  };
+
+  // Close context menu when clicking elsewhere
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    window.addEventListener("click", handleClick);
+    return () => window.removeEventListener("click", handleClick);
+  }, []);
+
+  // Handle keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't delete node if user is typing in an input or textarea
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+        return;
+      }
+      
+      // Undo/Redo (Cmd+Z / Cmd+Shift+Z on Mac, Ctrl+Z / Ctrl+Shift+Z on Windows)
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const modKey = isMac ? e.metaKey : e.ctrlKey;
+      
+      if (modKey && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        useAppStore.getState().undo();
+        return;
+      }
+      
+      if (modKey && e.key === 'z' && e.shiftKey) {
+        e.preventDefault();
+        useAppStore.getState().redo();
+        return;
+      }
+      
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedNode) {
+        e.preventDefault();
+        deleteNode(selectedNode);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedNode]);
+
+  // Get node position for connection drawing
+  const getNodeCenter = (nodeId: string, isOutput: boolean): Position => {
+    const node = workflow?.nodes.find(n => n.id === nodeId);
+    if (!node) return { x: 0, y: 0 };
+    return {
+      x: node.position.x + (isOutput ? 200 : 0),
+      y: node.position.y + 40,
+    };
+  };
+
+  // Run the workflow
+  const runWorkflow = async () => {
+    if (!workflow || workflow.nodes.length === 0) {
+      alert("Add some nodes to the workflow first!");
+      return;
+    }
+    
+    if (!selectedRepo) {
+      alert("Please select a repository first!");
+      return;
+    }
+
+    setShowTerminal(true);
+    startWorkflowRun(workflow.id);
+    saveHistory();
+    
+    addRunLog({ level: "info", message: "🚀 Starting workflow execution..." });
+    addRunLog({ level: "info", message: `Repository: ${selectedRepo.owner}/${selectedRepo.repo}` });
+    addRunLog({ level: "info", message: `Workflow: ${workflow.name}` });
+    addRunLog({ level: "info", message: `Working directory: ${selectedRepo.path}` });
+    
+    try {
+      // Sort nodes by connections (topological sort)
+      const sortedNodes = topologicalSort(workflow.nodes, workflow.connections);
+      const totalNodes = sortedNodes.length;
+      
+      for (let i = 0; i < sortedNodes.length; i++) {
+        const node = sortedNodes[i];
+        const nodeType = NODE_TYPES.find(t => t.id === node.type);
+        const progress = Math.round(((i + 1) / totalNodes) * 100);
+        
+        updateRun({ currentNodeId: node.id, progress });
+        addRunLog({ level: "info", message: `Executing: ${nodeType?.name || node.type}` });
+        
+        // Execute actual commands via Tauri
+        try {
+          switch (node.type) {
+            case "clone":
+              // Clone repository to a temp build directory
+              const tempBuildDir = `/tmp/buildforge-${selectedRepo.repo}-${Date.now()}`;
+              addRunLog({ level: "command", message: `git clone https://github.com/${selectedRepo.owner}/${selectedRepo.repo}.git ${tempBuildDir}` });
+              
+              try {
+                await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["clone", `https://github.com/${selectedRepo.owner}/${selectedRepo.repo}.git`, tempBuildDir],
+                  cwd: "/tmp"
+                });
+                addRunLog({ level: "success", message: `Cloned to ${tempBuildDir}` });
+                
+                // Store the build directory for subsequent nodes
+                updateNodeConfig(node.id, "buildDir", tempBuildDir);
+              } catch (e: any) {
+                const cloneError = typeof e === 'string' ? e : JSON.stringify(e);
+                addRunLog({ level: "error", message: `Clone failed: ${cloneError}` });
+                throw new Error(`Clone failed: ${cloneError}`);
+              }
+              break;
+              
+            case "pull":
+              // Fetch latest changes from remote
+              addRunLog({ level: "command", message: `git fetch origin ${selectedRepo.defaultBranch}` });
+              await invoke<string>("run_command", { 
+                command: "git",
+                args: ["fetch", "origin", selectedRepo.defaultBranch],
+                cwd: selectedRepo.path
+              });
+              
+              // Reset to match remote exactly (clean state for building)
+              addRunLog({ level: "command", message: `git reset --hard origin/${selectedRepo.defaultBranch}` });
+              await invoke<string>("run_command", { 
+                command: "git",
+                args: ["reset", "--hard", `origin/${selectedRepo.defaultBranch}`],
+                cwd: selectedRepo.path
+              });
+              addRunLog({ level: "success", message: "Repository synced with remote" });
+              break;
+              
+            case "sync_push":
+              // Pull any remote changes first (with rebase to keep linear history)
+              addRunLog({ level: "info", message: `Syncing with remote repository...` });
+              addRunLog({ level: "command", message: `git pull --rebase origin ${selectedRepo.defaultBranch}` });
+              try {
+                const pullResult = await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["pull", "--rebase", "origin", selectedRepo.defaultBranch],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: pullResult || "Synced with remote" });
+              } catch (e: any) {
+                const pullError = typeof e === 'string' ? e : JSON.stringify(e);
+                // If already up to date, that's fine
+                if (pullError.includes("Already up to date") || pullError.includes("up-to-date")) {
+                  addRunLog({ level: "info", message: "Already up to date" });
+                } else if (pullError.includes("CONFLICT") || pullError.includes("conflict")) {
+                  addRunLog({ level: "error", message: "Merge conflict detected. Resolve conflicts manually." });
+                  throw new Error("Merge conflict detected");
+                } else {
+                  addRunLog({ level: "warn", message: `Pull failed: ${pullError}` });
+                  // Continue anyway, the push will fail if there's an issue
+                }
+              }
+              
+              // Push local commits with retry logic
+              addRunLog({ level: "command", message: `git push origin ${selectedRepo.defaultBranch}` });
+              try {
+                await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["push", "origin", selectedRepo.defaultBranch],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: "Pushed to GitHub" });
+              } catch (pushError: any) {
+                const pushErrorStr = typeof pushError === 'string' ? pushError : JSON.stringify(pushError);
+                
+                if (pushErrorStr.includes("non-fast-forward") || pushErrorStr.includes("rejected")) {
+                  addRunLog({ level: "warn", message: "Push rejected, using force push with lease..." });
+                  
+                  // Use --force-with-lease which is a safe force push
+                  // It only force pushes if no one else has pushed to the branch
+                  try {
+                    await invoke<string>("run_command", { 
+                      command: "git",
+                      args: ["push", "--force-with-lease", "origin", selectedRepo.defaultBranch],
+                      cwd: selectedRepo.path
+                    });
+                    addRunLog({ level: "success", message: "Pushed to GitHub (force with lease)" });
+                  } catch (forceError: any) {
+                    const forceStr = typeof forceError === 'string' ? forceError : JSON.stringify(forceError);
+                    addRunLog({ level: "error", message: `Force push failed: ${forceStr}` });
+                    throw new Error(`Push failed: ${forceStr}`);
+                  }
+                } else {
+                  addRunLog({ level: "error", message: `Push failed: ${pushErrorStr}` });
+                  throw new Error(`Push failed: ${pushErrorStr}`);
+                }
+              }
+              break;
+
+            case "push":
+              addRunLog({ level: "info", message: `Checking for commits to push...` });
+              addRunLog({ level: "command", message: `git push origin ${selectedRepo.defaultBranch}` });
+              
+              let pushSucceeded = false;
+              try {
+                const pushResult = await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["push", "origin", selectedRepo.defaultBranch],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: pushResult || "Pushed to GitHub" });
+                pushSucceeded = true;
+              } catch (e: any) {
+                const errorStr = typeof e === 'string' ? e : JSON.stringify(e);
+                
+                // Check if it's a non-fast-forward error
+                if (errorStr.includes("non-fast-forward") || errorStr.includes("rejected")) {
+                  addRunLog({ level: "warn", message: "Push rejected, pulling changes first..." });
+                  
+                  // Try to pull and rebase
+                  try {
+                    await invoke<string>("run_command", { 
+                      command: "git",
+                      args: ["pull", "--rebase", "origin", selectedRepo.defaultBranch],
+                      cwd: selectedRepo.path
+                    });
+                    addRunLog({ level: "info", message: "Pulled remote changes, retrying push..." });
+                    
+                    // Retry push
+                    await invoke<string>("run_command", { 
+                      command: "git",
+                      args: ["push", "origin", selectedRepo.defaultBranch],
+                      cwd: selectedRepo.path
+                    });
+                    addRunLog({ level: "success", message: "Pushed to GitHub successfully" });
+                    pushSucceeded = true;
+                  } catch (retryError: any) {
+                    const retryErrorStr = typeof retryError === 'string' ? retryError : JSON.stringify(retryError);
+                    addRunLog({ level: "error", message: `Push failed after pull: ${retryErrorStr}` });
+                    throw new Error(`Push failed: ${retryErrorStr}`);
+                  }
+                } else {
+                  addRunLog({ level: "error", message: `Push failed: ${errorStr}` });
+                  throw new Error(`Push failed: ${errorStr}`);
+                }
+              }
+              
+              if (!pushSucceeded) {
+                throw new Error("Push failed");
+              }
+              break;
+              
+            case "checkout":
+              const branch = node.config.branch || "main";
+              addRunLog({ level: "command", message: `git checkout ${branch}` });
+              
+              try {
+                // First try to checkout the branch
+                const checkoutResult = await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["checkout", branch],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: checkoutResult || `Switched to branch: ${branch}` });
+              } catch (e: any) {
+                const errorStr = typeof e === 'string' ? e : JSON.stringify(e);
+                
+                // If branch doesn't exist locally, try to fetch and checkout
+                if (errorStr.includes("did not match") || errorStr.includes("pathspec")) {
+                  addRunLog({ level: "info", message: `Branch ${branch} not found locally, fetching...` });
+                  
+                  try {
+                    // Fetch from remote
+                    await invoke<string>("run_command", { 
+                      command: "git",
+                      args: ["fetch", "origin"],
+                      cwd: selectedRepo.path
+                    });
+                    
+                    // Checkout with -b to create and track remote branch
+                    const remoteCheckoutResult = await invoke<string>("run_command", { 
+                      command: "git",
+                      args: ["checkout", "-b", branch, `origin/${branch}`],
+                      cwd: selectedRepo.path
+                    });
+                    addRunLog({ level: "success", message: remoteCheckoutResult || `Switched to branch: ${branch}` });
+                  } catch (remoteError: any) {
+                    addRunLog({ level: "error", message: `Failed to checkout branch: ${remoteError}` });
+                    throw new Error(`Failed to checkout branch ${branch}`);
+                  }
+                } else {
+                  addRunLog({ level: "error", message: `Checkout failed: ${errorStr}` });
+                  throw new Error(`Checkout failed: ${errorStr}`);
+                }
+              }
+              break;
+              
+            case "build":
+              const buildCmd = node.config.command || detectBuildCommand(selectedRepo);
+              
+              // Debug logging
+              addRunLog({ level: "info", message: `Repository path: ${selectedRepo.path}` });
+              addRunLog({ level: "info", message: `Detected build system: ${selectedRepo.detectedBuildSystem || 'NONE'}` });
+              addRunLog({ level: "info", message: `Build command: ${buildCmd}` });
+              
+              if (!buildCmd || buildCmd.trim() === "") {
+                throw new Error("No build command detected. Make sure the repository has a valid build system.");
+              }
+              
+              // Find the build directory - check if a clone node ran before and has a buildDir
+              const cloneNode = sortedNodes.find(n => n.type === "clone" && n.config.buildDir);
+              const buildDirectory = cloneNode?.config.buildDir || selectedRepo.path;
+              
+              // Run build locally on this machine/server
+              addRunLog({ level: "command", message: `${buildCmd}` });
+              addRunLog({ level: "info", message: `Working directory: ${buildDirectory}` });
+              const [buildCommand, ...buildArgs] = buildCmd.split(" ");
+              
+              try {
+                addRunLog({ level: "info", message: `Executing: ${buildCommand} ${buildArgs.join(' ')}` });
+                const buildResult = await invoke<string>("run_command", { 
+                  command: buildCommand,
+                  args: buildArgs,
+                  cwd: buildDirectory
+                });
+                addRunLog({ level: "success", message: buildResult || "Build completed successfully" });
+                addRunLog({ level: "info", message: "Build finished" });
+                
+                // Find build artifacts using custom pattern or auto-detect
+                const artifactPattern = node.config.artifactPattern;
+                let artifactPaths: string[] = [];
+                
+                if (artifactPattern) {
+                  // User specified artifact pattern
+                  artifactPaths = [`${buildDirectory}/${artifactPattern}`];
+                  addRunLog({ level: "info", message: `Looking for artifacts matching: ${artifactPattern}` });
+                } else {
+                  // Auto-detect based on build system
+                  const detectedSystem = selectedRepo.detectedBuildSystem;
+                  
+                  if (detectedSystem === "cargo") {
+                    artifactPaths = [`${buildDirectory}/target/release`];
+                  } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm") {
+                    artifactPaths = [`${buildDirectory}/dist`, `${buildDirectory}/build`, `${buildDirectory}/out`];
+                  } else if (detectedSystem === "go") {
+                    artifactPaths = [buildDirectory];
+                  } else if (detectedSystem === "gradle" || detectedSystem === "maven") {
+                    artifactPaths = [`${buildDirectory}/build/libs`, `${buildDirectory}/target`];
+                  } else if (detectedSystem === "cmake" || detectedSystem === "make") {
+                    artifactPaths = [`${buildDirectory}/build`, `${buildDirectory}/bin`];
+                  } else if (detectedSystem === "dotnet") {
+                    artifactPaths = [`${buildDirectory}/bin/Release`];
+                  }
+                }
+                
+                // Store artifact paths for deploy node
+                if (artifactPaths.length > 0) {
+                  updateNodeConfig(node.id, "artifactPaths", JSON.stringify(artifactPaths));
+                  addRunLog({ level: "info", message: `Artifact locations: ${artifactPaths.join(", ")}` });
+                }
+              } catch (e: any) {
+                const buildError = typeof e === 'string' ? e : JSON.stringify(e);
+                addRunLog({ level: "error", message: `Build failed: ${buildError}` });
+                throw new Error(`Build failed: ${buildError}`);
+              }
+              break;
+              
+            case "test":
+              const testCmd = detectTestCommand(selectedRepo);
+              addRunLog({ level: "command", message: testCmd });
+              const [testCommand, ...testArgs] = testCmd.split(" ");
+              const testResult = await invoke<string>("run_command", { 
+                command: testCommand,
+                args: testArgs,
+                cwd: selectedRepo.path
+              });
+              addRunLog({ level: "success", message: testResult || "All tests passed" });
+              break;
+              
+            case "action":
+              const actionId = node.config.actionId;
+              if (!actionId) {
+                throw new Error("No action selected for this node");
+              }
+              
+              const action = localActions.find(a => a.id === actionId);
+              if (!action) {
+                throw new Error(`Action not found: ${actionId}`);
+              }
+              
+              addRunLog({ level: "command", message: `Running action: ${action.name}` });
+              
+              // Build the script with input variables
+              let actionScript = action.script;
+              const inputs = node.config.actionInputs || {};
+              for (const input of action.inputs) {
+                const value = inputs[input.name] || input.default || "";
+                addRunLog({ level: "info", message: `  ${input.name}="${value}"` });
+              }
+              
+              // Prepare environment variables
+              const envSetup = action.inputs
+                .map(input => {
+                  const value = inputs[input.name] || input.default || "";
+                  return `export ${input.name}="${value}"`;
+                })
+                .join("\n");
+              
+              const fullScript = `${envSetup}\n${actionScript}`;
+              
+              try {
+                const actionResult = await invoke<string>("run_command", { 
+                  command: "bash",
+                  args: ["-c", fullScript],
+                  cwd: selectedRepo?.path || "/tmp"
+                });
+                addRunLog({ level: "success", message: actionResult || "Action completed successfully" });
+              } catch (e: any) {
+                const actionError = typeof e === 'string' ? e : JSON.stringify(e);
+                addRunLog({ level: "error", message: `Action failed: ${actionError}` });
+                throw new Error(`Action failed: ${actionError}`);
+              }
+              break;
+              
+            case "commit":
+              const commitMsg = `Build ${workflow.nextVersion}`;
+              addRunLog({ level: "info", message: `Committing changes in ${selectedRepo.path}` });
+              addRunLog({ level: "command", message: `git add . && git commit -m "${commitMsg}"` });
+              
+              // Stage all changes
+              try {
+                addRunLog({ level: "info", message: "Staging all changes..." });
+                const addResult = await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["add", "."],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "info", message: addResult || "Files staged" });
+              } catch (e: any) {
+                const stageError = typeof e === 'string' ? e : JSON.stringify(e);
+                addRunLog({ level: "error", message: `Failed to stage files: ${stageError}` });
+                throw new Error(`Git add failed: ${stageError}`);
+              }
+              
+              // Commit changes (handle "nothing to commit" case)
+              try {
+                addRunLog({ level: "info", message: "Creating commit..." });
+                const commitResult = await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["commit", "-m", commitMsg],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: commitResult || "Changes committed" });
+                addRunLog({ level: "info", message: "Commit completed successfully" });
+              } catch (e: any) {
+                const errorStr = typeof e === 'string' ? e : JSON.stringify(e);
+                console.error("Commit error:", e); // Debug log
+                
+                if (errorStr.includes("nothing to commit") || errorStr.includes("no changes") || errorStr.includes("working tree clean")) {
+                  addRunLog({ level: "warn", message: "No changes to commit, continuing..." });
+                } else if (errorStr.includes("user.email") || errorStr.includes("user.name") || errorStr.includes("identity")) {
+                  addRunLog({ level: "error", message: "Git user not configured. Run in terminal:" });
+                  addRunLog({ level: "error", message: "  git config user.name 'Your Name'" });
+                  addRunLog({ level: "error", message: "  git config user.email 'you@example.com'" });
+                  throw new Error("Git user not configured");
+                } else {
+                  addRunLog({ level: "error", message: `Commit error details: ${errorStr}` });
+                  throw new Error(`Git commit failed: ${errorStr}`);
+                }
+              }
+              break;
+
+            case "deploy":
+              if (!accessToken) {
+                throw new Error("GitHub access token required for releases");
+              }
+              const version = node.config.version || workflow.nextVersion;
+              const releaseName = node.config.releaseName || `Release v${version}`;
+              // Sanitize tag name - git tags cannot have spaces or special characters
+              const sanitizedVersion = version.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9.-]/g, '');
+              const tagName = `v${sanitizedVersion}`;
+              
+              addRunLog({ level: "info", message: `Preparing release v${sanitizedVersion}...` });
+              if (version !== sanitizedVersion) {
+                addRunLog({ level: "warn", message: `Tag name sanitized: "${version}" → "${sanitizedVersion}"` });
+              }
+              
+              // Find build directory from clone node if it exists
+              const cloneNodeForDeploy = sortedNodes.find(n => n.type === "clone" && n.config.buildDir);
+              const buildDir = cloneNodeForDeploy?.config.buildDir || selectedRepo.path;
+              
+              // Create git tag first
+              addRunLog({ level: "command", message: `git tag ${tagName}` });
+              try {
+                await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["tag", "-a", tagName, "-m", releaseName],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: `Tag ${tagName} created` });
+              } catch (tagError: any) {
+                const tagErrorStr = typeof tagError === 'string' ? tagError : JSON.stringify(tagError);
+                if (tagErrorStr.includes("already exists")) {
+                  addRunLog({ level: "warn", message: `Tag ${tagName} already exists, using existing tag` });
+                } else {
+                  addRunLog({ level: "error", message: `Failed to create tag: ${tagErrorStr}` });
+                  throw new Error(`Failed to create tag: ${tagErrorStr}`);
+                }
+              }
+              
+              // Push tag to remote
+              addRunLog({ level: "command", message: `git push origin ${tagName}` });
+              try {
+                await invoke<string>("run_command", { 
+                  command: "git",
+                  args: ["push", "origin", tagName],
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: `Tag pushed to remote` });
+              } catch (pushTagError: any) {
+                const pushErrorStr = typeof pushTagError === 'string' ? pushTagError : JSON.stringify(pushTagError);
+                if (pushErrorStr.includes("already exists")) {
+                  addRunLog({ level: "warn", message: `Tag already exists on remote` });
+                } else {
+                  addRunLog({ level: "error", message: `Failed to push tag: ${pushErrorStr}` });
+                  throw new Error(`Failed to push tag: ${pushErrorStr}`);
+                }
+              }
+              
+              // Now create release via GitHub API
+              addRunLog({ level: "command", message: `Creating GitHub release ${tagName}...` });
+              const releaseResponse = await fetch(
+                `https://api.github.com/repos/${selectedRepo.owner}/${selectedRepo.repo}/releases`,
+                {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    Accept: "application/vnd.github.v3+json",
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    tag_name: `v${version}`,
+                    name: releaseName,
+                    body: `## Release v${version}\n\nAutomated release created by BuildForge\n\n### Changes\n- Built from ${selectedRepo.defaultBranch} branch`,
+                    draft: false,
+                    prerelease: false,
+                  }),
+                }
+              );
+              
+              if (!releaseResponse.ok) {
+                const error = await releaseResponse.text();
+                throw new Error(`Failed to create release: ${error}`);
+              }
+              
+              const release = await releaseResponse.json();
+              addRunLog({ level: "success", message: `Release v${version} created!` });
+              addRunLog({ level: "info", message: `URL: ${release.html_url}` });
+              
+              // Try to find and upload artifacts
+              const detectedSystem = selectedRepo.detectedBuildSystem;
+              let artifactPatterns: string[] = [];
+              
+              if (detectedSystem === "cargo") {
+                // Look for Rust binaries
+                artifactPatterns = ["target/release/*"];
+              } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm") {
+                // Look for zip/tar files or dist folder
+                artifactPatterns = ["*.zip", "*.tar.gz", "dist/*.zip"];
+              } else if (detectedSystem === "go") {
+                artifactPatterns = ["*.exe", selectedRepo.repo || "app"];
+              }
+              
+              if (artifactPatterns.length > 0 && buildDir) {
+                addRunLog({ level: "info", message: "Searching for build artifacts..." });
+                addRunLog({ level: "info", message: `Looking in: ${buildDir}` });
+                addRunLog({ level: "warn", message: "Note: Artifact upload requires manual configuration - see release page" });
+              }
+              
+              // Cleanup temp build directory if it was created by clone
+              if (cloneNodeForDeploy?.config.buildDir) {
+                addRunLog({ level: "info", message: `Cleaning up temp directory: ${cloneNodeForDeploy.config.buildDir}` });
+                try {
+                  await invoke<string>("run_command", {
+                    command: "rm",
+                    args: ["-rf", cloneNodeForDeploy.config.buildDir],
+                    cwd: "/tmp"
+                  });
+                } catch (e) {
+                  // Ignore cleanup errors
+                }
+              }
+              break;
+          }
+        } catch (nodeError: any) {
+          addRunLog({ level: "error", message: `Error: ${nodeError.message || nodeError}` });
+          throw nodeError;
+        }
+      }
+      
+      endWorkflowRun("success");
+      addRunLog({ level: "success", message: "Workflow completed successfully!" });
+    } catch (error: any) {
+      addRunLog({ level: "error", message: `Workflow failed: ${error.message || error}` });
+      endWorkflowRun("failed");
+    }
+  };
+
+  const stopWorkflow = () => {
+    endWorkflowRun("cancelled");
+    addRunLog({ level: "warn", message: "Workflow cancelled by user" });
+  };
+
+  const detectBuildCommand = (repo: LocalRepo): string => {
+    const buildInfo = BUILD_SYSTEMS.find(b => b.system === repo.detectedBuildSystem);
+    return buildInfo?.buildCmd || "npm run build";
+  };
+
+  const detectTestCommand = (repo: LocalRepo): string => {
+    const buildInfo = BUILD_SYSTEMS.find(b => b.system === repo.detectedBuildSystem);
+    return buildInfo?.testCmd || "npm test";
+  };
+
+  const selectedNodeData = workflow?.nodes.find(n => n.id === selectedNode);
+  const selectedNodeType = selectedNodeData ? NODE_TYPES.find(t => t.id === selectedNodeData.type) : null;
+  const isRunning = currentRun?.status === "running";
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left: Workflow List */}
+        <div className="w-48 bg-slate-900 border-r border-slate-700 flex flex-col">
+          <div className="p-3 border-b border-slate-700">
+            <button
+              onClick={() => {
+                const id = addWorkflow({
+                  name: "New Workflow",
+                  repoId: null,
+                  nodes: [],
+                  connections: [],
+                  nextVersion: "1.0.0",
+                });
+                selectWorkflow(id);
+              }}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white text-sm font-medium"
+            >
+              <Plus className="w-4 h-4" />
+              New Workflow
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto" onWheel={(e) => e.stopPropagation()}>
+            {workflows.map(w => (
+              <div
+                key={w.id}
+                onClick={() => selectWorkflow(w.id)}
+                onDoubleClick={() => {
+                  setEditingWorkflowId(w.id);
+                  setEditingWorkflowName(w.name);
+                }}
+                onMouseDown={(e) => {
+                  if (e.button === 1) { // Middle click
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (workflows.length > 1) {
+                      const idx = workflows.findIndex(wf => wf.id === w.id);
+                      removeWorkflow(w.id);
+                      // Select another workflow after deletion
+                      if (selectedWorkflowId === w.id) {
+                        const nextIdx = idx > 0 ? idx - 1 : 0;
+                        const remaining = workflows.filter(wf => wf.id !== w.id);
+                        if (remaining[nextIdx]) {
+                          selectWorkflow(remaining[nextIdx].id);
+                        }
+                      }
+                    }
+                  }
+                }}
+                className={`w-full text-left px-3 py-2 text-sm border-l-2 cursor-pointer ${
+                  selectedWorkflowId === w.id
+                    ? "bg-slate-800 border-green-500 text-white"
+                    : "border-transparent text-slate-400 hover:bg-slate-800 hover:text-white"
+                }`}
+              >
+                {editingWorkflowId === w.id ? (
+                  <input
+                    type="text"
+                    value={editingWorkflowName}
+                    onChange={(e) => setEditingWorkflowName(e.target.value)}
+                    onBlur={() => {
+                      if (editingWorkflowName.trim()) {
+                        renameWorkflow(w.id, editingWorkflowName.trim());
+                      }
+                      setEditingWorkflowId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        if (editingWorkflowName.trim()) {
+                          renameWorkflow(w.id, editingWorkflowName.trim());
+                        }
+                        setEditingWorkflowId(null);
+                      } else if (e.key === "Escape") {
+                        setEditingWorkflowId(null);
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    autoFocus
+                    className="w-full bg-slate-700 border border-green-500 rounded px-1 py-0.5 text-white text-sm outline-none"
+                  />
+                ) : (
+                  <span className="block truncate" title="Double-click to rename">{w.name}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Center: Node Canvas - only show if workflow is selected */}
+        {workflow ? (
+        <div className="flex-1 flex flex-col bg-slate-950">
+          {/* Toolbar */}
+          <div className="h-12 border-b border-slate-700 flex items-center justify-between px-4 bg-slate-900">
+            <div className="flex items-center gap-3">
+              <RepoSelector
+                selectedRepoId={workflow?.repoId || null}
+                onSelect={handleRepoSelect}
+              />
+              {selectedRepo?.latestVersion && (
+                <span className="text-xs text-slate-500">
+                  Latest: <span className="text-green-400 font-mono">{selectedRepo.latestVersion}</span>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-500 text-xs">
+                Zoom: {Math.round(zoom * 100)}%
+              </span>
+              <button
+                onClick={() => setZoom(1)}
+                className="px-2 py-1 text-xs text-slate-400 hover:text-white"
+              >
+                Reset
+              </button>
+              <span className="text-slate-500 text-xs mx-2">|</span>
+              <button
+                onClick={() => setShowTerminal(!showTerminal)}
+                className={`p-2 rounded ${
+                  showTerminal 
+                    ? "bg-slate-700 text-white" 
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                }`}
+                title="Toggle Terminal"
+              >
+                <Terminal className="w-4 h-4" />
+              </button>
+              {isRunning ? (
+                <button 
+                  onClick={stopWorkflow}
+                  className="flex items-center gap-2 px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-white text-sm font-medium"
+                >
+                  <StopCircle className="w-4 h-4" />
+                  Stop
+                </button>
+              ) : (
+                <button 
+                  onClick={runWorkflow}
+                  disabled={!workflow?.nodes.length}
+                  className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed rounded text-white text-sm font-medium"
+                >
+                  <Play className="w-4 h-4" />
+                  Run
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Canvas */}
+          <div
+            ref={canvasRef}
+            className={`flex-1 relative overflow-hidden ${isPanning ? 'cursor-grabbing' : 'cursor-crosshair'}`}
+            style={{ 
+              backgroundImage: "radial-gradient(circle, #334155 1px, transparent 1px)",
+              backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
+              backgroundPosition: `${canvasOffset.x}px ${canvasOffset.y}px`,
+            }}
+            onContextMenu={handleContextMenu}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            onMouseDown={handleCanvasMouseDown}
+            onWheel={handleWheel}
+            onClick={() => {
+              setSelectedNode(null);
+              setNodeContextMenu(null);
+            }}
+          >
+            {/* Transformed container for zoom/pan */}
+            <div
+              style={{
+                transform: `translate(${canvasOffset.x}px, ${canvasOffset.y}px) scale(${zoom})`,
+                transformOrigin: "0 0",
+              }}
+            >
+              {/* Connection Lines */}
+              <svg 
+                className="absolute inset-0 pointer-events-none"
+                style={{ width: "10000px", height: "10000px", overflow: "visible" }}
+              >
+                {/* Existing connections */}
+                {workflow?.connections.map(conn => {
+                  const from = getNodeCenter(conn.from, true);
+                  const to = getNodeCenter(conn.to, false);
+                  const midX = (from.x + to.x) / 2;
+                  return (
+                    <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={(e) => {
+                      e.stopPropagation();
+                      deleteConnection(conn.id);
+                    }}>
+                      <path
+                        d={`M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth="20"
+                      />
+                      <path
+                        d={`M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`}
+                        fill="none"
+                        stroke="#22c55e"
+                        strokeWidth="2"
+                        className="drop-shadow-lg group-hover:stroke-red-500 transition-colors"
+                      />
+                      {/* Delete indicator on hover */}
+                      <circle
+                        cx={(from.x + to.x) / 2}
+                        cy={(from.y + to.y) / 2}
+                        r="8"
+                        fill="#ef4444"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity"
+                      />
+                      <text
+                        x={(from.x + to.x) / 2}
+                        y={(from.y + to.y) / 2}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        fill="white"
+                        fontSize="10"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                      >
+                        ×
+                      </text>
+                    </g>
+                  );
+                })}
+                
+                {/* Active connection being drawn */}
+                {connecting && (
+                  <path
+                    d={`M ${connecting.startPos.x} ${connecting.startPos.y} C ${(connecting.startPos.x + mousePos.x) / 2} ${connecting.startPos.y}, ${(connecting.startPos.x + mousePos.x) / 2} ${mousePos.y}, ${mousePos.x} ${mousePos.y}`}
+                    fill="none"
+                    stroke="#22c55e"
+                    strokeWidth="2"
+                    strokeDasharray="5,5"
+                    className="drop-shadow-lg animate-pulse"
+                  />
+                )}
+              </svg>
+
+              {/* Nodes */}
+              {workflow?.nodes.map(node => {
+                const nodeType = NODE_TYPES.find(t => t.id === node.type);
+                const Icon = nodeType?.icon || Package;
+                const isSelected = selectedNode === node.id;
+                const isCurrentNode = currentRun?.currentNodeId === node.id;
+                
+                return (
+                  <div
+                    key={node.id}
+                    className={`absolute select-none ${isSelected ? "z-10" : "z-0"}`}
+                    style={{
+                      left: node.position.x,
+                      top: node.position.y,
+                      width: 200,
+                    }}
+                    onMouseDown={(e) => {
+                      if (e.button === 1) { // Middle click to delete
+                        e.preventDefault();
+                        e.stopPropagation();
+                        deleteNode(node.id);
+                      } else {
+                        handleNodeMouseDown(e, node.id);
+                      }
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const rect = canvasRef.current?.getBoundingClientRect();
+                      if (rect) {
+                        setNodeContextMenu({
+                          nodeId: node.id,
+                          x: e.clientX - rect.left,
+                          y: e.clientY - rect.top,
+                        });
+                      }
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedNode(node.id);
+                    }}
+                  >
+                    {/* Input Port */}
+                    {nodeType?.inputs && nodeType.inputs.length > 0 && (
+                      <div
+                        className="absolute -left-3 top-8 w-6 h-6 bg-slate-700 border-2 border-slate-500 rounded-full cursor-pointer hover:border-green-400 hover:scale-125 flex items-center justify-center transition-all shadow-lg"
+                        onMouseUp={() => completeConnection(node.id, true)}
+                      >
+                        <div className="w-2 h-2 bg-slate-400 rounded-full" />
+                      </div>
+                    )}
+
+                    {/* Node Body */}
+                    <div className={`rounded-lg overflow-hidden shadow-2xl border-2 transition-all ${
+                      isSelected ? "border-green-500 shadow-green-500/20" : "border-slate-600"
+                    } ${isCurrentNode ? "border-yellow-500" : ""}`}>
+                      {/* Header */}
+                      <div 
+                        className="px-3 py-2 flex items-center gap-2 cursor-grab active:cursor-grabbing"
+                        style={{ backgroundColor: nodeType?.color || "#64748b" }}
+                      >
+                        <Icon className="w-4 h-4 text-white" />
+                        <span className="text-white text-sm font-medium flex-1">
+                          {nodeType?.name}
+                        </span>
+                        {isCurrentNode && <Loader2 className="w-4 h-4 text-white animate-spin" />}
+                      </div>
+                      
+                      {/* Body */}
+                      <div className="bg-slate-800 p-2 space-y-1">
+                        <p className="text-xs text-slate-400">{nodeType?.description}</p>
+                        {node.type === "deploy" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-green-400 font-mono">
+                              v{node.config.version || workflow?.nextVersion}
+                            </span>
+                          </div>
+                        )}
+                        {node.type === "fetch" && selectedRepo?.latestVersion && (
+                          <div className="pt-1">
+                            <span className="text-xs text-blue-400 font-mono">
+                              Latest: {selectedRepo.latestVersion}
+                            </span>
+                          </div>
+                        )}
+                        {node.type === "checkout" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-cyan-400 font-mono">
+                              Branch: {node.config.branch || "main"}
+                            </span>
+                          </div>
+                        )}
+                        {node.type === "build" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-emerald-400 font-mono">
+                              {node.config.command || (selectedRepo?.detectedBuildSystem 
+                                ? BUILD_SYSTEMS.find(b => b.system === selectedRepo.detectedBuildSystem)?.buildCmd 
+                                : "npm run build")}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Output Port */}
+                    {nodeType?.outputs && nodeType.outputs.length > 0 && (
+                      <div
+                        className="absolute -right-3 top-8 w-6 h-6 bg-slate-700 border-2 border-slate-500 rounded-full cursor-pointer hover:border-green-400 hover:scale-125 flex items-center justify-center transition-all shadow-lg"
+                        onMouseDown={(e) => startConnection(node.id, true, e)}
+                      >
+                        <div className="w-2 h-2 bg-green-400 rounded-full" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Context Menu */}
+            {contextMenu && (
+              <div
+                className="absolute bg-slate-800 border border-slate-600 rounded-lg shadow-2xl py-1 z-50"
+                style={{ 
+                  left: contextMenu.x * zoom + canvasOffset.x, 
+                  top: contextMenu.y * zoom + canvasOffset.y,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-3 py-1.5 text-xs text-slate-500 uppercase tracking-wide">Add Node</div>
+                {NODE_TYPES.map(type => {
+                  const Icon = type.icon;
+                  return (
+                    <button
+                      key={type.id}
+                      onClick={() => addNode(type.id)}
+                      className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-slate-700"
+                    >
+                      <div 
+                        className="w-6 h-6 rounded flex items-center justify-center"
+                        style={{ backgroundColor: type.color }}
+                      >
+                        <Icon className="w-3 h-3 text-white" />
+                      </div>
+                      <div>
+                        <div className="text-white text-sm">{type.name}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Node Replacement Context Menu */}
+            {nodeContextMenu && (
+              <div
+                className="absolute bg-slate-800 border border-slate-600 rounded-lg shadow-2xl py-1 z-50 max-h-96 overflow-y-auto"
+                style={{ 
+                  left: nodeContextMenu.x, 
+                  top: nodeContextMenu.y,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-3 py-1.5 text-xs text-slate-500 uppercase tracking-wide">
+                  Replace With
+                </div>
+                {NODE_TYPES.map(type => {
+                  const Icon = type.icon;
+                  const currentNode = workflow?.nodes.find(n => n.id === nodeContextMenu.nodeId);
+                  const isCurrent = currentNode?.type === type.id;
+                  return (
+                    <button
+                      key={type.id}
+                      onClick={() => {
+                        if (!isCurrent) {
+                          replaceNode(nodeContextMenu.nodeId, type.id);
+                        }
+                      }}
+                      disabled={isCurrent}
+                      className={`w-full flex items-center gap-3 px-3 py-2 text-left ${
+                        isCurrent ? 'bg-slate-700/50 cursor-not-allowed opacity-50' : 'hover:bg-slate-700'
+                      }`}
+                    >
+                      <div 
+                        className="w-6 h-6 rounded flex items-center justify-center"
+                        style={{ backgroundColor: type.color }}
+                      >
+                        <Icon className="w-3 h-3 text-white" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-white text-sm">{type.name}</div>
+                      </div>
+                      {isCurrent && <span className="text-xs text-green-400">✓</span>}
+                    </button>
+                  );
+                })}
+                <div className="border-t border-slate-600 mt-1">
+                  <button
+                    onClick={() => {
+                      deleteNode(nodeContextMenu.nodeId);
+                    }}
+                    className="w-full px-3 py-2 flex items-center gap-3 hover:bg-red-600 text-left text-red-400 hover:text-white transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span className="text-sm">Delete Node</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Empty State */}
+            {workflow?.nodes.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center text-slate-500">
+                  <p className="text-lg mb-2">Right-click to add nodes</p>
+                  <p className="text-sm">Drag nodes to arrange, connect ports to create flow</p>
+                  <p className="text-sm mt-2">Ctrl/Pinch to zoom • Right-click to pan • Middle-click nodes to delete</p>
+                </div>
+              </div>
+            )}
+
+            {/* No Workflow Selected - show only when no workflow */}
+            {!workflow ? (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950">
+                <div className="text-center">
+                  <GitBranch className="w-16 h-16 text-slate-600 mx-auto mb-4" />
+                  <p className="text-xl font-medium text-slate-400 mb-2">No Workflow Selected</p>
+                  <p className="text-sm text-slate-500 mb-4">Select a workflow from the sidebar or create a new one</p>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const newId = addWorkflow({
+                        name: `Workflow ${workflows.length + 1}`,
+                        repoId: null,
+                        nodes: [],
+                        connections: [],
+                        nextVersion: "1.0.0",
+                        variables: {},
+                        history: [],
+                        historyIndex: -1,
+                      });
+                      selectWorkflow(newId);
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm font-medium transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create Workflow
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center bg-slate-950">
+            <div className="text-center">
+              <GitBranch className="w-16 h-16 text-slate-600 mx-auto mb-4" />
+              <p className="text-xl font-medium text-slate-400 mb-2">No Workflow Selected</p>
+              <p className="text-sm text-slate-500 mb-4">Select a workflow from the sidebar or create a new one</p>
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const newId = addWorkflow({
+                    name: `Workflow ${workflows.length + 1}`,
+                    repoId: null,
+                    nodes: [],
+                    connections: [],
+                    nextVersion: "1.0.0",
+                    variables: {},
+                    history: [],
+                    historyIndex: -1,
+                  });
+                  selectWorkflow(newId);
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm font-medium transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                Create Workflow
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Right: Node Properties - only show if workflow is selected */}
+        {workflow && (
+        <div className="w-64 bg-slate-900 border-l border-slate-700 flex flex-col">
+          <div className="p-3 border-b border-slate-700">
+            <h3 className="text-sm font-medium text-white">Properties</h3>
+          </div>
+          
+          {selectedNodeData && selectedNodeType ? (
+            <div className="p-3 space-y-3 overflow-auto flex-1" onWheel={(e) => e.stopPropagation()}>
+              <div 
+                className="flex items-center gap-2 px-3 py-2 rounded"
+                style={{ backgroundColor: `${selectedNodeType.color}20` }}
+              >
+                <selectedNodeType.icon className="w-4 h-4" style={{ color: selectedNodeType.color }} />
+                <span className="text-white font-medium">{selectedNodeType.name}</span>
+              </div>
+              
+              <p className="text-xs text-slate-400">{selectedNodeType.description}</p>
+
+              {/* Server Selection */}
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Server</label>
+                <select
+                  value={selectedNodeData.config.server || ""}
+                  onChange={(e) => updateNodeConfig(selectedNodeData.id, "server", e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                >
+                  <option value="">Auto (any available)</option>
+                  {onlineServers.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Node-specific config */}
+              {selectedNodeData.type === "checkout" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Branch</label>
+                    <select
+                      value={selectedNodeData.config.branch || "main"}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "branch", e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                      disabled={loadingBranches}
+                    >
+                      {loadingBranches ? (
+                        <option>Loading...</option>
+                      ) : branches.length > 0 ? (
+                        branches.map(b => (
+                          <option key={b} value={b}>{b}</option>
+                        ))
+                      ) : (
+                        <option value="main">main</option>
+                      )}
+                    </select>
+                  </div>
+                  
+                  {!showCreateBranch ? (
+                    <button
+                      onClick={() => setShowCreateBranch(true)}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded text-slate-300 text-sm"
+                    >
+                      <GitBranchPlus className="w-4 h-4" />
+                      Create Branch
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={newBranchName}
+                        onChange={(e) => setNewBranchName(e.target.value)}
+                        placeholder="new-branch-name"
+                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={createBranch}
+                          className="flex-1 px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-white text-sm"
+                        >
+                          Create
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowCreateBranch(false);
+                            setNewBranchName("");
+                          }}
+                          className="flex-1 px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-white text-sm"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {selectedNodeData.type === "build" && (
+                <>
+                  <div className="p-3 bg-slate-700/30 rounded border border-slate-600 mb-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Zap className="w-3 h-3 text-green-400" />
+                      <span className="text-xs font-medium text-slate-300">Local Build</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Build system: <span className="text-green-400 font-mono">{selectedRepo?.detectedBuildSystem || "will be detected"}</span>
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Default: {detectBuildCommand(selectedRepo || {} as LocalRepo)}
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Build Command</label>
+                    <input
+                      type="text"
+                      value={selectedNodeData.config.command || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "command", e.target.value)}
+                      placeholder={detectBuildCommand(selectedRepo || {} as LocalRepo)}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Leave empty to use auto-detected command. Runs on YOUR machine/server.
+                    </p>
+                  </div>
+                  
+                  <div className="mt-3">
+                    <label className="block text-xs text-slate-500 mb-1">Artifact Pattern (optional)</label>
+                    <input
+                      type="text"
+                      value={selectedNodeData.config.artifactPattern || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "artifactPattern", e.target.value)}
+                      placeholder="e.g., dist/*.zip, target/release/*"
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Files to upload to GitHub release
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {selectedNodeData.type === "deploy" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Version</label>
+                    <input
+                      type="text"
+                      value={selectedNodeData.config.version || workflow?.nextVersion || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "version", e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Release Name</label>
+                    <input
+                      type="text"
+                      value={selectedNodeData.config.releaseName || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "releaseName", e.target.value)}
+                      placeholder="Release v1.0.0"
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                    />
+                  </div>
+                </>
+              )}
+
+              {selectedNodeData.type === "action" && (
+                <>
+                  {/* Check for build.yml in repo */}
+                  {selectedRepo && (
+                      <div className="mb-3 p-2 bg-slate-800/50 border border-slate-700 rounded">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-slate-400">build.yml Status:</span>
+                          <button
+                            onClick={async () => {
+                              try {
+                                // Check if build.yml exists
+                                await invoke("run_command", {
+                                  command: "test",
+                                  args: ["-f", `${selectedRepo.path}/.github/workflows/build.yml`],
+                                  cwd: selectedRepo.path
+                                });
+                                alert("build.yml found! You can import it from the Actions tab.");
+                              } catch (e) {
+                                alert("NO BUILD.YML PRESENT\n\nCreate one in .github/workflows/build.yml or import from Actions tab.");
+                              }
+                            }}
+                            className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-white"
+                          >
+                            Check File
+                          </button>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Path: .github/workflows/build.yml
+                        </p>
+                      </div>
+                  )}
+                  
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Select Action</label>
+                    <select
+                      value={selectedNodeData.config.actionId || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "actionId", e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                    >
+                      <option value="">Choose an action...</option>
+                      {localActions.map(action => (
+                        <option key={action.id} value={action.id}>{action.name}</option>
+                      ))}
+                    </select>
+                    {localActions.length === 0 && (
+                      <p className="text-xs text-amber-400 mt-1">
+                        No actions defined. Create actions in the Actions tab.
+                      </p>
+                    )}
+                  </div>
+                  
+                  {selectedNodeData.config.actionId && (() => {
+                    const selectedAction = localActions.find(a => a.id === selectedNodeData.config.actionId);
+                    if (!selectedAction) return null;
+                    
+                    return (
+                      <>
+                        {selectedAction.description && (
+                          <p className="text-xs text-slate-400 italic">{selectedAction.description}</p>
+                        )}
+                        
+                        {selectedAction.inputs && selectedAction.inputs.length > 0 && (
+                          <div className="space-y-2">
+                            <label className="block text-xs text-slate-500">Inputs</label>
+                            {selectedAction.inputs.map(input => (
+                              <div key={input.name}>
+                                <label className="block text-xs text-slate-400 mb-1">
+                                  {input.name}
+                                  {input.required && <span className="text-red-400 ml-1">*</span>}
+                                </label>
+                                <input
+                                  type="text"
+                                  value={(selectedNodeData.config.actionInputs as Record<string, string>)?.[input.name] || input.default || ""}
+                                  onChange={(e) => {
+                                    const currentInputs = (selectedNodeData.config.actionInputs as Record<string, string>) || {};
+                                    updateNodeConfig(selectedNodeData.id, "actionInputs", {
+                                      ...currentInputs,
+                                      [input.name]: e.target.value
+                                    });
+                                  }}
+                                  placeholder={input.description || input.default || ""}
+                                  className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        <div className="p-2 bg-slate-800 rounded border border-slate-700 mt-2">
+                          <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+                            <Terminal className="w-3 h-3" />
+                            Script Preview
+                          </div>
+                          <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-32 overflow-auto">
+                            {selectedAction.script.slice(0, 200)}{selectedAction.script.length > 200 ? "..." : ""}
+                          </pre>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </>
+              )}
+
+              {/* Delete Button */}
+              <button
+                onClick={() => deleteNode(selectedNodeData.id)}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded text-red-400 text-sm mt-4"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete Node
+              </button>
+            </div>
+          ) : (
+            <div className="p-3 text-center text-slate-500 text-sm">
+              Select a node to view properties
+            </div>
+          )}
+
+          {/* Connection help */}
+          {connecting && (
+            <div className="p-3 border-t border-slate-700 bg-green-500/10">
+              <p className="text-xs text-green-400 text-center">
+                Click on an input port to connect
+              </p>
+              <button
+                onClick={() => setConnecting(null)}
+                className="w-full mt-2 px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-slate-300 text-xs"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+        )}
+      </div>
+
+      {/* Terminal at bottom */}
+      {showTerminal && workflow && (
+        currentRun ? (
+          <WorkflowTerminal
+            logs={currentRun.logs}
+            isRunning={isRunning}
+            onClose={() => {
+              setShowTerminal(false);
+              if (!isRunning) {
+                clearCurrentRun();
+              }
+            }}
+            onStop={stopWorkflow}
+          />
+        ) : (
+          <div className="h-64 bg-slate-900 border-t border-slate-700 flex items-center justify-center">
+            <p className="text-slate-500 text-sm">Terminal is ready. Run a workflow to see output.</p>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// Topological sort for node execution order
+function topologicalSort(nodes: WorkflowNode[], connections: WorkflowConnection[]): WorkflowNode[] {
+  const inDegree = new Map<string, number>();
+  const adjacency = new Map<string, string[]>();
+  
+  nodes.forEach(n => {
+    inDegree.set(n.id, 0);
+    adjacency.set(n.id, []);
+  });
+  
+  connections.forEach(c => {
+    adjacency.get(c.from)?.push(c.to);
+    inDegree.set(c.to, (inDegree.get(c.to) || 0) + 1);
+  });
+  
+  const queue: string[] = [];
+  inDegree.forEach((degree, id) => {
+    if (degree === 0) queue.push(id);
+  });
+  
+  const sorted: string[] = [];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    sorted.push(id);
+    
+    adjacency.get(id)?.forEach(target => {
+      const newDegree = (inDegree.get(target) || 0) - 1;
+      inDegree.set(target, newDegree);
+      if (newDegree === 0) queue.push(target);
+    });
+  }
+  
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  return sorted.map(id => nodeMap.get(id)!).filter(Boolean);
+}

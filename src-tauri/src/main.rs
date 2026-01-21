@@ -35,6 +35,10 @@ fn main() {
             }
             SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
                 "quit" => {
+                    // Stop local server before quitting
+                    let _ = std::process::Command::new("pkill")
+                        .args(["-f", "buildforge-server"])
+                        .output();
                     std::process::exit(0);
                 }
                 "show" => {
@@ -58,7 +62,36 @@ fn main() {
             commands::get_server_status,
             commands::send_notification,
             commands::validate_github_token,
+            commands::get_git_remote,
+            commands::detect_build_system,
+            commands::get_branches,
+            commands::start_local_server,
+            commands::stop_local_server,
+            commands::start_oauth_server,
+            commands::stop_oauth_server,
+            commands::check_oauth_result,
+            commands::exchange_oauth_code,
+            commands::run_command,
+            commands::start_device_flow,
+            commands::poll_device_flow,
+            commands::list_files,
+            commands::read_file_bytes,
+            commands::get_app_data_dir,
+            commands::save_app_data,
+            commands::load_app_data,
+            commands::delete_app_data,
+            commands::list_app_data_files,
+            commands::ensure_directory,
+            commands::select_folder,
         ])
+        .on_window_event(|event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
+                // Stop local server when window closes
+                let _ = std::process::Command::new("pkill")
+                    .args(["-f", "buildforge-server"])
+                    .output();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

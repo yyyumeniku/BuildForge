@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{SinkExt, StreamExt};
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::connect_async;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +19,7 @@ pub enum ServerStatus {
     Connecting,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum ServerMessage {
@@ -34,6 +32,7 @@ pub enum ServerMessage {
     Error(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildStartPayload {
     pub build_id: String,
@@ -43,6 +42,7 @@ pub struct BuildStartPayload {
     pub edges: Vec<BuildEdge>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildProgressPayload {
     pub build_id: String,
@@ -50,6 +50,7 @@ pub struct BuildProgressPayload {
     pub current_node: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildCompletePayload {
     pub build_id: String,
@@ -59,12 +60,14 @@ pub struct BuildCompletePayload {
     pub release_url: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildLogPayload {
     pub build_id: String,
     pub log: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildNode {
     pub id: String,
@@ -73,6 +76,7 @@ pub struct BuildNode {
     pub config: serde_json::Value,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildEdge {
     pub id: String,
@@ -97,7 +101,7 @@ impl ServerConnection {
         let url = format!("ws://{}:{}", self.address, self.port);
         
         match connect_async(&url).await {
-            Ok((ws_stream, _)) => {
+            Ok((_ws_stream, _)) => {
                 self.status = ServerStatus::Online;
                 Ok(())
             }

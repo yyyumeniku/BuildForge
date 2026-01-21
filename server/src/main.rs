@@ -2,15 +2,16 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
+use tokio::sync::RwLock;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -26,6 +27,94 @@ struct Args {
     /// Working directory for builds
     #[arg(short, long, default_value = ".")]
     workdir: PathBuf,
+
+    /// Data directory for storing workflows, actions, and settings
+    #[arg(long, default_value = "./data")]
+    data_dir: PathBuf,
+}
+
+// =====================================================
+// Persistent Storage Structures
+// =====================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ServerData {
+    workflows: Vec<StoredWorkflow>,
+    actions: Vec<StoredAction>,
+    repos: Vec<StoredRepo>,
+    build_history: Vec<BuildRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredWorkflow {
+    id: String,
+    name: String,
+    repo_id: Option<String>,
+    nodes: Vec<serde_json::Value>,
+    connections: Vec<serde_json::Value>,
+    next_version: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredAction {
+    id: String,
+    name: String,
+    description: String,
+    script: String,
+    inputs: Vec<serde_json::Value>,
+    outputs: Vec<serde_json::Value>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredRepo {
+    id: String,
+    path: String,
+    owner: Option<String>,
+    repo: Option<String>,
+    default_branch: String,
+    cloned_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildRecord {
+    id: String,
+    workflow_id: String,
+    status: String,
+    started_at: String,
+    finished_at: Option<String>,
+    duration_ms: Option<u64>,
+    logs: Vec<String>,
+}
+
+type SharedData = Arc<RwLock<ServerData>>;
+
+impl ServerData {
+    fn load(data_dir: &PathBuf) -> Result<Self> {
+        let path = data_dir.join("server-data.json");
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            let data: ServerData = serde_json::from_str(&content)?;
+            info!("Loaded {} workflows, {} actions from {}", 
+                data.workflows.len(), data.actions.len(), path.display());
+            Ok(data)
+        } else {
+            info!("No existing data found, starting fresh");
+            Ok(ServerData::default())
+        }
+    }
+
+    fn save(&self, data_dir: &PathBuf) -> Result<()> {
+        std::fs::create_dir_all(data_dir)?;
+        let path = data_dir.join("server-data.json");
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        info!("Saved data to {}", path.display());
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +128,35 @@ enum ServerMessage {
     BuildLog(BuildLogPayload),
     BuildCancel(String),
     Error(String),
+    // Data sync messages
+    SyncRequest,
+    SyncResponse(SyncData),
+    SaveWorkflow(StoredWorkflow),
+    DeleteWorkflow(String),
+    SaveAction(StoredAction),
+    DeleteAction(String),
+    RunAction(RunActionPayload),
+    ActionResult(ActionResultPayload),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SyncData {
+    workflows: Vec<StoredWorkflow>,
+    actions: Vec<StoredAction>,
+    repos: Vec<StoredRepo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RunActionPayload {
+    action_id: String,
+    inputs: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActionResultPayload {
+    action_id: String,
+    success: bool,
+    output: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,11 +218,16 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     
+    // Initialize data storage
+    let data = ServerData::load(&args.data_dir).unwrap_or_default();
+    let shared_data: SharedData = Arc::new(RwLock::new(data));
+    
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let listener = TcpListener::bind(&addr).await?;
     
     info!("BuildForge server listening on {}", addr);
     info!("Working directory: {:?}", args.workdir);
+    info!("Data directory: {:?}", args.data_dir);
     
     if args.github_token.is_some() {
         info!("GitHub token configured");
@@ -116,9 +239,11 @@ async fn main() -> Result<()> {
                 info!("New connection from {}", peer);
                 let github_token = args.github_token.clone();
                 let workdir = args.workdir.clone();
+                let data_dir = args.data_dir.clone();
+                let data_clone = shared_data.clone();
                 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, github_token, workdir).await {
+                    if let Err(e) = handle_connection(stream, github_token, workdir, data_dir, data_clone).await {
                         error!("Connection error: {}", e);
                     }
                 });
@@ -134,6 +259,8 @@ async fn handle_connection(
     stream: TcpStream,
     github_token: Option<String>,
     workdir: PathBuf,
+    data_dir: PathBuf,
+    shared_data: SharedData,
 ) -> Result<()> {
     let ws_stream = accept_async(stream).await?;
     let (mut write, mut read) = ws_stream.split();
@@ -154,19 +281,106 @@ async fn handle_connection(
                 ServerMessage::BuildStart(payload) => {
                     info!("Starting build: {} v{}", payload.project_name, payload.version);
                     
-                    let token = payload.github_token.or(github_token.clone());
+                    let token = payload.github_token.clone().or(github_token.clone());
                     
                     // Execute build in background
                     let workdir = workdir.clone();
+                    let data_clone = shared_data.clone();
+                    let data_dir_clone = data_dir.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = execute_build(payload, token, workdir).await {
+                        if let Err(e) = execute_build(payload.clone(), token, workdir).await {
                             error!("Build failed: {}", e);
                         }
+                        // Record build in history
+                        let mut data = data_clone.write().await;
+                        data.build_history.push(BuildRecord {
+                            id: payload.build_id.clone(),
+                            workflow_id: String::new(),
+                            status: "completed".to_string(),
+                            started_at: chrono::Utc::now().to_rfc3339(),
+                            finished_at: Some(chrono::Utc::now().to_rfc3339()),
+                            duration_ms: None,
+                            logs: vec![],
+                        });
+                        let _ = data.save(&data_dir_clone);
                     });
                 }
                 ServerMessage::BuildCancel(build_id) => {
                     warn!("Build cancel requested: {}", build_id);
                     // TODO: Implement build cancellation
+                }
+                // Data sync handlers
+                ServerMessage::SyncRequest => {
+                    info!("Sync request received");
+                    let data = shared_data.read().await;
+                    let sync_data = SyncData {
+                        workflows: data.workflows.clone(),
+                        actions: data.actions.clone(),
+                        repos: data.repos.clone(),
+                    };
+                    let response = serde_json::to_string(&ServerMessage::SyncResponse(sync_data))?;
+                    write.send(Message::Text(response)).await?;
+                }
+                ServerMessage::SaveWorkflow(workflow) => {
+                    info!("Saving workflow: {}", workflow.name);
+                    let mut data = shared_data.write().await;
+                    if let Some(existing) = data.workflows.iter_mut().find(|w| w.id == workflow.id) {
+                        *existing = workflow;
+                    } else {
+                        data.workflows.push(workflow);
+                    }
+                    let _ = data.save(&data_dir);
+                }
+                ServerMessage::DeleteWorkflow(id) => {
+                    info!("Deleting workflow: {}", id);
+                    let mut data = shared_data.write().await;
+                    data.workflows.retain(|w| w.id != id);
+                    let _ = data.save(&data_dir);
+                }
+                ServerMessage::SaveAction(action) => {
+                    info!("Saving action: {}", action.name);
+                    let mut data = shared_data.write().await;
+                    if let Some(existing) = data.actions.iter_mut().find(|a| a.id == action.id) {
+                        *existing = action;
+                    } else {
+                        data.actions.push(action);
+                    }
+                    let _ = data.save(&data_dir);
+                }
+                ServerMessage::DeleteAction(id) => {
+                    info!("Deleting action: {}", id);
+                    let mut data = shared_data.write().await;
+                    data.actions.retain(|a| a.id != id);
+                    let _ = data.save(&data_dir);
+                }
+                ServerMessage::RunAction(payload) => {
+                    info!("Running action: {}", payload.action_id);
+                    let data = shared_data.read().await;
+                    if let Some(action) = data.actions.iter().find(|a| a.id == payload.action_id) {
+                        // Build environment with inputs
+                        let mut script = action.script.clone();
+                        for (key, value) in &payload.inputs {
+                            script = format!("export {}=\"{}\"\n{}", key, value, script);
+                        }
+                        
+                        let result = run_script(&script, &workdir).await;
+                        let (success, output) = match result {
+                            Ok(out) => (true, out),
+                            Err(e) => (false, e.to_string()),
+                        };
+                        
+                        let response = serde_json::to_string(&ServerMessage::ActionResult(ActionResultPayload {
+                            action_id: payload.action_id,
+                            success,
+                            output,
+                        }))?;
+                        write.send(Message::Text(response)).await?;
+                    } else {
+                        let response = serde_json::to_string(&ServerMessage::Error(
+                            format!("Action not found: {}", payload.action_id)
+                        ))?;
+                        write.send(Message::Text(response)).await?;
+                    }
                 }
                 _ => {}
             }
@@ -175,6 +389,26 @@ async fn handle_connection(
     
     info!("WebSocket connection closed");
     Ok(())
+}
+
+async fn run_script(script: &str, workdir: &PathBuf) -> Result<String> {
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .current_dir(workdir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    
+    if output.status.success() {
+        Ok(format!("{}{}", stdout, stderr))
+    } else {
+        anyhow::bail!("Script failed: {}{}", stdout, stderr)
+    }
 }
 
 async fn execute_build(
@@ -331,7 +565,7 @@ async fn run_script(script: &str, shell: &str, workdir: &PathBuf, build_id: &str
 }
 
 fn topological_sort(nodes: &[BuildNode], edges: &[BuildEdge]) -> Result<Vec<BuildNode>> {
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::collections::{HashMap, VecDeque};
     
     let mut in_degree: HashMap<&str, usize> = HashMap::new();
     let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();

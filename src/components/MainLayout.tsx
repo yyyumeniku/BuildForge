@@ -1,40 +1,116 @@
 import { useState } from "react";
+import { Workflow, Server, Zap, Settings, History, LogOut, Package } from "lucide-react";
 import { useAppStore } from "../store/appStore";
-import { Sidebar } from "./Sidebar";
-import { Dashboard } from "./Dashboard";
-import { ProjectsView } from "./ProjectsView";
-import { ServersView } from "./ServersView";
-import { HistoryView } from "./HistoryView";
-import { SettingsView } from "./SettingsView";
 import { Titlebar } from "./Titlebar";
 
-export function MainLayout() {
-  const { currentView } = useAppStore();
+// Tab content components
+import { WorkflowsTab } from "./tabs/WorkflowsTab";
+import { ServersTab } from "./tabs/ServersTab";
+import { ReleasesTab } from "./tabs/ReleasesTab";
+import { ActionsTab } from "./tabs/ActionsTab";
+import { HistoryTab } from "./tabs/HistoryTab";
+import { SettingsTab } from "./tabs/SettingsTab";
 
-  const renderView = () => {
-    switch (currentView) {
-      case "dashboard":
-        return <Dashboard />;
-      case "projects":
-        return <ProjectsView />;
+type TabId = "workflows" | "servers" | "releases" | "actions" | "history" | "settings";
+
+interface Tab {
+  id: TabId;
+  label: string;
+  icon: React.ReactNode;
+}
+
+const tabs: Tab[] = [
+  { id: "workflows", label: "Workflows", icon: <Workflow className="w-5 h-5" /> },
+  { id: "servers", label: "Servers", icon: <Server className="w-5 h-5" /> },
+  { id: "releases", label: "Releases", icon: <Package className="w-5 h-5" /> },
+  { id: "actions", label: "Actions", icon: <Zap className="w-5 h-5" /> },
+  { id: "history", label: "History", icon: <History className="w-5 h-5" /> },
+  { id: "settings", label: "Settings", icon: <Settings className="w-5 h-5" /> },
+];
+
+export function MainLayout() {
+  const [activeTab, setActiveTab] = useState<TabId>("workflows");
+  const { user, logout } = useAppStore();
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case "workflows":
+        return <WorkflowsTab />;
       case "servers":
-        return <ServersView />;
+        return <ServersTab />;
+      case "releases":
+        return <ReleasesTab />;
+      case "actions":
+        return <ActionsTab />;
       case "history":
-        return <HistoryView />;
+        return <HistoryTab />;
       case "settings":
-        return <SettingsView />;
+        return <SettingsTab />;
       default:
-        return <Dashboard />;
+        return <WorkflowsTab />;
     }
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col bg-slate-900">
       <Titlebar />
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar />
+        {/* Vertical Tabs - Left Side */}
+        <div className="w-56 bg-slate-950 border-r border-slate-800 flex flex-col">
+          {/* User Info */}
+          <div className="p-4 border-b border-slate-800">
+            <div className="flex items-center gap-3">
+              {user?.avatar_url ? (
+                <img 
+                  src={user.avatar_url} 
+                  alt={user.name} 
+                  className="w-10 h-10 rounded-full"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center">
+                  <span className="text-slate-400 text-lg">{user?.name?.[0] || "?"}</span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{user?.name || "User"}</p>
+                <p className="text-xs text-slate-500 truncate">@{user?.login || "unknown"}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Tab List */}
+          <nav className="flex-1 p-2 space-y-1">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded text-left ${
+                  activeTab === tab.id
+                    ? "bg-slate-800 text-green-400"
+                    : "text-slate-400 hover:bg-slate-800/50 hover:text-white"
+                }`}
+              >
+                <span className={activeTab === tab.id ? "text-green-400" : ""}>{tab.icon}</span>
+                <span className="font-medium">{tab.label}</span>
+              </button>
+            ))}
+          </nav>
+
+          {/* Logout Button */}
+          <div className="p-2 border-t border-slate-800">
+            <button
+              onClick={logout}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-slate-400 hover:bg-red-600/20 hover:text-red-400"
+            >
+              <LogOut className="w-5 h-5" />
+              <span className="font-medium">Logout</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Content Area - Right Side */}
         <main className="flex-1 overflow-auto bg-slate-900/50">
-          {renderView()}
+          {renderContent()}
         </main>
       </div>
     </div>
