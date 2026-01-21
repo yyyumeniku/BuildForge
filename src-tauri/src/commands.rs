@@ -178,14 +178,14 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     
     let path = Path::new(&path);
     
+    // Check for Tauri FIRST (before npm/node checks)
+    if path.join("src-tauri").is_dir() && path.join("src-tauri/Cargo.toml").exists() {
+        return Ok("tauri".to_string());
+    }
+    
     // Check for Wails (Go + frontend framework)
     if path.join("wails.json").exists() || (path.join("go.mod").exists() && path.join("frontend").is_dir()) {
         return Ok("wails".to_string());
-    }
-    
-    // Check for Tauri (Rust + frontend)
-    if path.join("src-tauri").is_dir() && path.join("src-tauri/Cargo.toml").exists() {
-        return Ok("tauri".to_string());
     }
     
     // Check for Electron (Node.js based)

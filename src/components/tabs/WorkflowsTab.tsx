@@ -109,7 +109,7 @@ const NODE_TYPES = [
 // Build system detection patterns
 const BUILD_SYSTEMS: { system: BuildSystem; files: string[]; buildCmd: string; testCmd: string }[] = [
   { system: "wails", files: ["wails.json"], buildCmd: "wails build", testCmd: "go test ./..." },
-  { system: "tauri", files: ["src-tauri/Cargo.toml"], buildCmd: "npm run tauri build", testCmd: "cargo test" },
+  { system: "tauri", files: ["src-tauri/Cargo.toml"], buildCmd: "npm run tauri build -- --debug", testCmd: "cargo test" },
   { system: "electron", files: ["package.json"], buildCmd: "npm run build", testCmd: "npm test" },
   { system: "npm", files: ["package.json", "package-lock.json"], buildCmd: "npm run build", testCmd: "npm test" },
   { system: "yarn", files: ["yarn.lock"], buildCmd: "yarn build", testCmd: "yarn test" },
@@ -158,11 +158,11 @@ function WorkflowTerminal({
 
   const getLevelPrefix = (level: RunLogEntry["level"]) => {
     switch (level) {
-      case "error": return "✗";
-      case "warn": return "⚠";
-      case "success": return "✓";
-      case "command": return "$";
-      default: return "›";
+      case "error": return "[ERROR]";
+      case "warn": return "[WARN]";
+      case "success": return "[OK]";
+      case "command": return "[CMD]";
+      default: return "[INFO]";
     }
   };
 
@@ -2012,7 +2012,7 @@ export function WorkflowsTab() {
                       <div className="flex-1">
                         <div className="text-white text-sm">{type.name}</div>
                       </div>
-                      {isCurrent && <span className="text-xs text-green-400">✓</span>}
+                      {isCurrent && <span className="text-xs text-green-400">[CURRENT]</span>}
                     </button>
                   );
                 })}
@@ -2343,9 +2343,9 @@ export function WorkflowsTab() {
                                   args: ["-f", `${selectedRepo.path}/.github/workflows/build.yml`],
                                   cwd: selectedRepo.path
                                 });
-                                alert("build.yml found! You can import it from the Actions tab.");
+                                alert("build.yml found! You can import it as a workflow.");
                               } catch (e) {
-                                alert("NO BUILD.YML PRESENT\n\nCreate one in .github/workflows/build.yml or import from Actions tab.");
+                                alert("NO BUILD.YML PRESENT\n\nCreate one in .github/workflows/build.yml or define your workflow manually.");
                               }
                             }}
                             className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-white"
@@ -2373,7 +2373,7 @@ export function WorkflowsTab() {
                     </select>
                     {localActions.length === 0 && (
                       <p className="text-xs text-amber-400 mt-1">
-                        No actions defined. Create actions in the Actions tab.
+                        No actions defined. Create custom actions in Settings.
                       </p>
                     )}
                   </div>

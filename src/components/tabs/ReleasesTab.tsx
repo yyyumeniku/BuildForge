@@ -272,11 +272,6 @@ export function ReleasesTab() {
     });
   };
 
-  const formatSize = (bytes: number) => {
-    const mb = bytes / (1024 * 1024);
-    return `${mb.toFixed(1)} MB`;
-  };
-
   return (
     <div className="h-full flex">
       {/* Left: Local Repos List */}
@@ -426,75 +421,72 @@ export function ReleasesTab() {
               </div>
             )}
 
-            {/* Releases */}
-            <div className="space-y-3">
-              {currentRepo.releases.map(release => (
-                <div
-                  key={release.id}
-                  className="p-4 bg-slate-800 border border-slate-700 rounded-lg hover:border-slate-600 transition-colors"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <Tag className="w-4 h-4 text-blue-400" />
-                      <div>
-                        <span className="font-mono text-white">{release.tag_name}</span>
-                        {release.name && release.name !== release.tag_name && (
-                          <span className="text-slate-400 ml-2">— {release.name}</span>
-                        )}
-                      </div>
-                      {release.prerelease && (
-                        <span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded">
-                          pre-release
-                        </span>
-                      )}
-                      {release.draft && (
-                        <span className="px-2 py-0.5 bg-slate-500/20 text-slate-400 text-xs rounded">
-                          draft
-                        </span>
-                      )}
+            {/* Version Cards - Latest and Next */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+              {/* Latest Release */}
+              {currentRepo.releases.length > 0 && currentRepo.releases[0] && (
+                <div className="p-6 bg-slate-800 border border-slate-700 rounded-xl">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Tag className="w-5 h-5 text-blue-400" />
+                    <h3 className="text-lg font-semibold text-white">Latest Release</h3>
+                  </div>
+                  <div className="mt-4">
+                    <div className="text-3xl font-mono font-bold text-blue-400 mb-2">
+                      {currentRepo.releases[0].tag_name}
                     </div>
+                    {currentRepo.releases[0].name && currentRepo.releases[0].name !== currentRepo.releases[0].tag_name && (
+                      <div className="text-slate-300 mb-2">{currentRepo.releases[0].name}</div>
+                    )}
+                    <div className="text-sm text-slate-500 mb-3">
+                      Published {formatDate(currentRepo.releases[0].published_at)}
+                    </div>
+                    {currentRepo.releases[0].assets.length > 0 && (
+                      <div className="flex items-center gap-2 text-sm text-slate-400 mb-3">
+                        <Package className="w-4 h-4" />
+                        {currentRepo.releases[0].assets.length} asset{currentRepo.releases[0].assets.length !== 1 ? 's' : ''}
+                      </div>
+                    )}
                     <button
-                      onClick={() => openUrl(release.html_url)}
-                      className="p-1 text-slate-400 hover:text-white"
+                      onClick={() => openUrl(currentRepo.releases[0].html_url)}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm font-medium"
                     >
                       <ExternalLink className="w-4 h-4" />
+                      View on GitHub
                     </button>
                   </div>
-                  
-                  <div className="mt-2 flex items-center gap-4 text-xs text-slate-500">
-                    <span>{formatDate(release.published_at)}</span>
-                    {release.assets.length > 0 && (
-                      <span className="flex items-center gap-1">
-                        <Package className="w-3 h-3" />
-                        {release.assets.length} assets
-                      </span>
-                    )}
-                  </div>
-                  
-                  {release.assets.length > 0 && (
-                    <div className="mt-3 space-y-1">
-                      {release.assets.slice(0, 4).map(asset => (
-                        <div key={asset.name} className="flex items-center justify-between text-xs">
-                          <span className="text-slate-400 font-mono truncate">{asset.name}</span>
-                          <div className="flex items-center gap-3 flex-shrink-0 ml-2">
-                            <span className="text-slate-600">{asset.download_count} downloads</span>
-                            <span className="text-slate-500">{formatSize(asset.size)}</span>
-                          </div>
-                        </div>
-                      ))}
-                      {release.assets.length > 4 && (
-                        <div className="text-xs text-slate-500">+{release.assets.length - 4} more</div>
-                      )}
-                    </div>
-                  )}
                 </div>
-              ))}
+              )}
               
+              {/* Next Version */}
+              {currentRepo.nextVersion && (
+                <div className="p-6 bg-gradient-to-br from-green-900/20 to-green-800/10 border border-green-500/30 rounded-xl">
+                  <div className="flex items-center gap-2 mb-3">
+                    <ArrowUp className="w-5 h-5 text-green-400" />
+                    <h3 className="text-lg font-semibold text-white">Next Version</h3>
+                  </div>
+                  <div className="mt-4">
+                    <div className="text-5xl font-mono font-bold text-green-400 mb-4">
+                      {currentRepo.nextVersion}
+                    </div>
+                    <p className="text-sm text-slate-400 mb-4">
+                      This will be the version number for your next release when you run a release workflow.
+                    </p>
+                    <div className="px-3 py-2 bg-green-500/10 border border-green-500/20 rounded text-xs text-green-400">
+                      Auto-incremented from {currentRepo.latestVersion || "1.0.0"}
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* No releases yet */}
               {currentRepo.releases.length === 0 && currentRepo.owner && (
-                <div className="text-center py-12 text-slate-500">
-                  <Tag className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                  <p>No releases yet</p>
-                  <p className="text-sm mt-1">Create your first release using a workflow</p>
+                <div className="col-span-2 text-center py-16 text-slate-500 bg-slate-800/30 border border-slate-700 rounded-xl">
+                  <Tag className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p className="text-lg">No releases yet</p>
+                  <p className="text-sm mt-2">Create your first release using a workflow</p>
+                  {currentRepo.nextVersion && (
+                    <p className="text-green-400 font-mono text-lg mt-4">First version: {currentRepo.nextVersion}</p>
+                  )}
                 </div>
               )}
             </div>

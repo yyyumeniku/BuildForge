@@ -141,7 +141,17 @@ export function ServersTab() {
     if (!systemInfo) setLoadingSystemInfo(true);
     try {
       const info = await invoke<SystemInfo>("get_system_info");
-      setSystemInfo(info);
+      // Only update if values have actually changed (prevents unnecessary re-renders)
+      setSystemInfo(prev => {
+        if (!prev) return info;
+        // Compare key dynamic values
+        if (prev.cpu_usage_percent !== info.cpu_usage_percent ||
+            prev.memory_used_gb !== info.memory_used_gb ||
+            prev.disk_used_gb !== info.disk_used_gb) {
+          return info;
+        }
+        return prev;
+      });
       if (logInfo) {
         addLog("info", `System: ${info.os} ${info.os_version} (${info.arch})`);
       }
@@ -309,9 +319,51 @@ export function ServersTab() {
         cwd: "/"
       });
       
-      addLog("success", "Docker installation command completed! You may need to restart the app or start Docker Desktop.");
-      // Re-check Docker availability after a short delay
-      setTimeout(() => checkDockerAvailable(), 3000);
+      addLog("success", "Docker installation completed!");
+      
+      // Open Docker Desktop on macOS
+      if (systemInfo.os.toLowerCase().includes("macos") || systemInfo.os.toLowerCase().includes("darwin")) {
+        addLog("info", "Opening Docker Desktop...");
+        try {
+          await invoke<string>("run_command", {
+            command: "open",
+            args: ["-a", "Docker"],
+            cwd: "/"
+          });
+          addLog("success", "Docker Desktop is starting...");
+        } catch (openError: any) {
+          addLog("warn", `Could not auto-open Docker: ${openError}. Please open it manually.`);
+        }
+      }
+      
+      // Poll for Docker availability (it takes time to start)
+      addLog("info", "Waiting for Docker to be ready...");
+      let attempts = 0;
+      const maxAttempts = 40; // 40 seconds
+      const checkInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const dockerCheck = await invoke<string>("run_command", { 
+            command: "docker", 
+            args: ["--version"],
+            cwd: "/"
+          });
+          if (dockerCheck) {
+            clearInterval(checkInterval);
+            setDockerEnabled(true);
+            addLog("success", "Docker is now ready!");
+            addLog("info", dockerCheck.trim());
+            await loadDockerContainers();
+          }
+        } catch {
+          if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            addLog("warn", "Docker is taking longer than expected. Please check Docker Desktop manually.");
+            // Still re-check
+            setTimeout(() => checkDockerAvailable(), 5000);
+          }
+        }
+      }, 1000);
     } catch (error: unknown) {
       addLog("error", `Failed to install Docker: ${error}`);
       addLog("info", "Please install Docker manually from https://docker.com");
@@ -557,16 +609,14 @@ export function ServersTab() {
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 font-mono text-sm">
             <div className="flex gap-6">
               {/* ASCII Art */}
-              <div className={`hidden md:block text-xs leading-tight flex-shrink-0 ${
+              <pre className={`hidden md:block text-xs leading-tight flex-shrink-0 m-0 ${
                 getOSType() === "macos" ? "text-cyan-400" :
                 getOSType() === "linux" ? "text-yellow-400" :
                 getOSType() === "windows" ? "text-blue-400" :
                 "text-slate-400"
               }`}>
-                {(OS_ASCII[getOSType()] || OS_ASCII.unknown).map((line, i) => (
-                  <div key={i} className="whitespace-pre">{line}</div>
-                ))}
-              </div>
+                {(OS_ASCII[getOSType()] || OS_ASCII.unknown).join('\n')}
+              </pre>
               
               {/* System Info - Fastfetch style */}
               {loadingSystemInfo ? (

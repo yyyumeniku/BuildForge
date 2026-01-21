@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Workflow, Server, Zap, Settings, History, LogOut, Package } from "lucide-react";
+import { Workflow, Server, Settings, Package, LogOut } from "lucide-react";
 import { useAppStore } from "../store/appStore";
 import { Titlebar } from "./Titlebar";
 
@@ -7,11 +7,9 @@ import { Titlebar } from "./Titlebar";
 import { WorkflowsTab } from "./tabs/WorkflowsTab";
 import { ServersTab } from "./tabs/ServersTab";
 import { ReleasesTab } from "./tabs/ReleasesTab";
-import { ActionsTab } from "./tabs/ActionsTab";
-import { HistoryTab } from "./tabs/HistoryTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 
-type TabId = "workflows" | "servers" | "releases" | "actions" | "history" | "settings";
+type TabId = "workflows" | "servers" | "releases" | "settings";
 
 interface Tab {
   id: TabId;
@@ -22,9 +20,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: "workflows", label: "Workflows", icon: <Workflow className="w-5 h-5" /> },
   { id: "servers", label: "Servers", icon: <Server className="w-5 h-5" /> },
-  { id: "releases", label: "Releases", icon: <Package className="w-5 h-5" /> },
-  { id: "actions", label: "Actions", icon: <Zap className="w-5 h-5" /> },
-  { id: "history", label: "History", icon: <History className="w-5 h-5" /> },
+  { id: "releases", label: "Repositories", icon: <Package className="w-5 h-5" /> },
   { id: "settings", label: "Settings", icon: <Settings className="w-5 h-5" /> },
 ];
 
@@ -40,10 +36,6 @@ export function MainLayout() {
         return <ServersTab />;
       case "releases":
         return <ReleasesTab />;
-      case "actions":
-        return <ActionsTab />;
-      case "history":
-        return <HistoryTab />;
       case "settings":
         return <SettingsTab />;
       default:
