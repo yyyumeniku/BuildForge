@@ -122,10 +122,10 @@ pub async fn send_notification(
     body: String,
     success: bool,
 ) -> Result<(), String> {
-    let icon = if success { "✅" } else { "❌" };
+    let prefix = if success { "[SUCCESS]" } else { "[ERROR]" };
     
     Notification::new()
-        .summary(&format!("{} {}", icon, title))
+        .summary(&format!("{} {}", prefix, title))
         .body(&body)
         .appname("BuildForge")
         .show()
@@ -178,7 +178,25 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     
     let path = Path::new(&path);
     
-    // Check for various build system files in priority order
+    // Check for Wails (Go + frontend framework)
+    if path.join("wails.json").exists() || (path.join("go.mod").exists() && path.join("frontend").is_dir()) {
+        return Ok("wails".to_string());
+    }
+    
+    // Check for Tauri (Rust + frontend)
+    if path.join("src-tauri").is_dir() && path.join("src-tauri/Cargo.toml").exists() {
+        return Ok("tauri".to_string());
+    }
+    
+    // Check for Electron (Node.js based)
+    if path.join("package.json").exists() {
+        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+            if content.contains("\"electron\"") {
+                return Ok("electron".to_string());
+            }
+        }
+    }
+    
     // Cargo (Rust)
     if path.join("Cargo.toml").exists() {
         return Ok("cargo".to_string());
@@ -470,6 +488,57 @@ pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Res
             format!("{}\n(exit code {})", combined, exit_code)
         };
         Err(error_msg)
+    }
+}
+
+#[tauri::command]
+pub async fn install_package(package_name: String) -> Result<String, String> {
+    use std::process::Command;
+    
+    // Detect OS and use appropriate package manager
+    #[cfg(target_os = "macos")]
+    let (pkg_manager, args) = ("brew", vec!["install", &package_name]);
+    
+    #[cfg(target_os = "linux")]
+    let (pkg_manager, args) = {
+        // Try to detect Linux package manager
+        if Command::new("which").arg("apt").output().is_ok() {
+            ("sudo", vec!["apt", "install", "-y", &package_name])
+        } else if Command::new("which").arg("dnf").output().is_ok() {
+            ("sudo", vec!["dnf", "install", "-y", &package_name])
+        } else if Command::new("which").arg("pacman").output().is_ok() {
+            ("sudo", vec!["pacman", "-S", "--noconfirm", &package_name])
+        } else if Command::new("which").arg("zypper").output().is_ok() {
+            ("sudo", vec!["zypper", "install", "-y", &package_name])
+        } else {
+            return Err("Could not detect package manager (apt, dnf, pacman, or zypper)".to_string());
+        }
+    };
+    
+    #[cfg(target_os = "windows")]
+    let (pkg_manager, args) = {
+        // Try winget first, fall back to choco
+        if Command::new("winget").arg("--version").output().is_ok() {
+            ("winget", vec!["install", &package_name])
+        } else if Command::new("choco").arg("--version").output().is_ok() {
+            ("choco", vec!["install", "-y", &package_name])
+        } else {
+            return Err("Could not find winget or chocolatey. Please install one.".to_string());
+        }
+    };
+    
+    let output = Command::new(pkg_manager)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("Failed to run package manager: {}", e))?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    if output.status.success() {
+        Ok(format!("Package installed successfully\n{}{}", stdout, stderr))
+    } else {
+        Err(format!("Package installation failed\n{}{}", stdout, stderr))
     }
 }
 

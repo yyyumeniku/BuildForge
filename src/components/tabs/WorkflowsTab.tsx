@@ -87,6 +87,15 @@ const NODE_TYPES = [
     outputs: ["repo"]
   },
   { 
+    id: "command", 
+    name: "Run Command", 
+    icon: Terminal, 
+    color: "#f97316",
+    description: "Execute custom shell command (auto-install if missing)",
+    inputs: ["repo"],
+    outputs: ["result"]
+  },
+  { 
     id: "deploy", 
     name: "Create Release", 
     icon: Upload, 
@@ -99,6 +108,9 @@ const NODE_TYPES = [
 
 // Build system detection patterns
 const BUILD_SYSTEMS: { system: BuildSystem; files: string[]; buildCmd: string; testCmd: string }[] = [
+  { system: "wails", files: ["wails.json"], buildCmd: "wails build", testCmd: "go test ./..." },
+  { system: "tauri", files: ["src-tauri/Cargo.toml"], buildCmd: "npm run tauri build", testCmd: "cargo test" },
+  { system: "electron", files: ["package.json"], buildCmd: "npm run build", testCmd: "npm test" },
   { system: "npm", files: ["package.json", "package-lock.json"], buildCmd: "npm run build", testCmd: "npm test" },
   { system: "yarn", files: ["yarn.lock"], buildCmd: "yarn build", testCmd: "yarn test" },
   { system: "pnpm", files: ["pnpm-lock.yaml"], buildCmd: "pnpm build", testCmd: "pnpm test" },
@@ -317,6 +329,34 @@ export function WorkflowsTab() {
   const workflow = workflows.find(w => w.id === selectedWorkflowId);
   const onlineServers = servers.filter(s => s.status === "online");
   const selectedRepo = workflow?.repoId ? repos.find(r => r.id === workflow.repoId) : null;
+
+  // Center canvas on nodes when workflow changes
+  useEffect(() => {
+    if (workflow && workflow.nodes.length > 0 && canvasRef.current) {
+      // Calculate bounds of all nodes
+      const nodePositions = workflow.nodes.map(n => n.position);
+      const minX = Math.min(...nodePositions.map(p => p.x));
+      const maxX = Math.max(...nodePositions.map(p => p.x));
+      const minY = Math.min(...nodePositions.map(p => p.y));
+      const maxY = Math.max(...nodePositions.map(p => p.y));
+      
+      // Calculate center of nodes
+      const centerX = (minX + maxX) / 2 + 100; // +100 for node half-width
+      const centerY = (minY + maxY) / 2 + 40;  // +40 for node half-height
+      
+      // Calculate canvas center
+      const canvasWidth = canvasRef.current.clientWidth;
+      const canvasHeight = canvasRef.current.clientHeight;
+      const canvasCenterX = canvasWidth / 2;
+      const canvasCenterY = canvasHeight / 2;
+      
+      // Set offset to center nodes
+      setCanvasOffset({
+        x: canvasCenterX - centerX,
+        y: canvasCenterY - centerY
+      });
+    }
+  }, [selectedWorkflowId, workflow?.nodes.length]);
 
   // Fetch branches when repo changes
   useEffect(() => {
@@ -996,9 +1036,9 @@ export function WorkflowsTab() {
               addRunLog({ level: "info", message: `Working directory: ${buildDirectory}` });
               
               // Parse command and args more carefully
-              const cmdParts = buildCmd.split(" ").filter(p => p.trim() !== "");
-              const buildCommand = cmdParts[0];
-              const buildArgs = cmdParts.slice(1);
+              const buildCmdParts = buildCmd.split(" ").filter(p => p.trim() !== "");
+              const buildCommand = buildCmdParts[0];
+              const buildArgs = buildCmdParts.slice(1);
               
               addRunLog({ level: "info", message: `Command: ${buildCommand}` });
               addRunLog({ level: "info", message: `Arguments: [${buildArgs.join(', ')}]` });
@@ -1109,6 +1149,74 @@ export function WorkflowsTab() {
                 const actionError = typeof e === 'string' ? e : JSON.stringify(e);
                 addRunLog({ level: "error", message: `Action failed: ${actionError}` });
                 throw new Error(`Action failed: ${actionError}`);
+              }
+              break;
+              
+            case "command":
+              const customCmd = node.config.command;
+              if (!customCmd || customCmd.trim() === "") {
+                throw new Error("No command specified. Please configure the command node.");
+              }
+              
+              addRunLog({ level: "info", message: `Executing custom command: ${customCmd}` });
+              
+              // Parse command - first word is the executable
+              const customCmdParts = customCmd.trim().split(/\s+/);
+              const executable = customCmdParts[0];
+              const cmdArgs = customCmdParts.slice(1);
+              
+              try {
+                addRunLog({ level: "info", message: `Checking if '${executable}' is available...` });
+                
+                // Try to run the command
+                const cmdResult = await invoke<string>("run_command", {
+                  command: executable,
+                  args: cmdArgs,
+                  cwd: selectedRepo.path
+                });
+                addRunLog({ level: "success", message: cmdResult || "Command executed successfully" });
+              } catch (e: any) {
+                const errorStr = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+                
+                // Check if it's a "command not found" error
+                if (errorStr.includes("not found") || errorStr.includes("Failed to execute")) {
+                  addRunLog({ level: "warn", message: `Command '${executable}' not found` });
+                  
+                  // Ask user if they want to install it
+                  const shouldInstall = confirm(
+                    `Command '${executable}' is not installed.\n\n` +
+                    `Would you like to install it using your system package manager?\n\n` +
+                    `This will run a package manager command (brew, apt, pacman, etc.)`
+                  );
+                  
+                  if (shouldInstall) {
+                    addRunLog({ level: "info", message: `Installing '${executable}'...` });
+                    try {
+                      await invoke<string>("install_package", {
+                        packageName: executable
+                      });
+                      addRunLog({ level: "success", message: `Successfully installed '${executable}'` });
+                      
+                      // Try running the command again
+                      addRunLog({ level: "info", message: "Retrying command..." });
+                      const retryResult = await invoke<string>("run_command", {
+                        command: executable,
+                        args: cmdArgs,
+                        cwd: selectedRepo.path
+                      });
+                      addRunLog({ level: "success", message: retryResult || "Command executed successfully" });
+                    } catch (installError: any) {
+                      const installErr = typeof installError === 'string' ? installError : JSON.stringify(installError);
+                      addRunLog({ level: "error", message: `Failed to install: ${installErr}` });
+                      throw new Error(`Failed to install ${executable}: ${installErr}`);
+                    }
+                  } else {
+                    throw new Error(`Command '${executable}' not found and installation was declined`);
+                  }
+                } else {
+                  addRunLog({ level: "error", message: `Command failed: ${errorStr}` });
+                  throw new Error(`Command failed: ${errorStr}`);
+                }
               }
               break;
               
@@ -1945,6 +2053,29 @@ export function WorkflowsTab() {
                     />
                     <p className="text-xs text-slate-500 mt-1">
                       Leave empty to use default: "Build [version]"
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {selectedNodeData.type === "command" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Command</label>
+                    <input
+                      type="text"
+                      value={selectedNodeData.config.command || ""}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "command", e.target.value)}
+                      placeholder="e.g., wails build, docker build -t myapp ."
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Any shell command. Will offer to install if not found.
+                    </p>
+                  </div>
+                  <div className="p-2 bg-blue-500/10 border border-blue-500/20 rounded">
+                    <p className="text-xs text-blue-400">
+                      If the command is not installed, you'll be prompted to install it via your OS package manager (brew/apt/winget/etc).
                     </p>
                   </div>
                 </>

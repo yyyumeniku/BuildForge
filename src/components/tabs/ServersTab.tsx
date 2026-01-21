@@ -123,35 +123,6 @@ export function ServersTab() {
     setServers(servers.filter(s => s.id !== id));
   };
 
-  const connectServer = async (id: string) => {
-    setServers(servers.map(s => 
-      s.id === id ? { ...s, status: "connecting" as const } : s
-    ));
-    
-    // Try to connect to the server
-    const server = servers.find(s => s.id === id);
-    if (server) {
-      try {
-        const response = await fetch(`http://${server.address}:${server.port}/health`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (response.ok) {
-          setServers(servers.map(s => 
-            s.id === id ? { ...s, status: "online" as const } : s
-          ));
-        } else {
-          setServers(servers.map(s => 
-            s.id === id ? { ...s, status: "offline" as const } : s
-          ));
-        }
-      } catch {
-        setServers(servers.map(s => 
-          s.id === id ? { ...s, status: "offline" as const } : s
-        ));
-      }
-    }
-  };
-
   const startLocalServer = async () => {
     addLog("info", "Starting local server...");
     try {
