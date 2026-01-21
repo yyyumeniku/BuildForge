@@ -1046,7 +1046,7 @@ export function WorkflowsTab() {
                   if (matchingServer && matchingServer.id !== "localhost") {
                     addRunLog({ level: "info", message: `Routing build to server: ${matchingServer.name} (${matchingServer.targetOS})` });
                     // In real implementation, would send build over WebSocket to remote server
-                    addRunLog({ level: "warn", message: "Remote server builds not yet implemented, falling back to Docker..." });
+                    addRunLog({ level: "warn", message: "Remote server builds not yet implemented, checking Docker..." });
                   }
                   
                   // Check for Docker container
@@ -1102,11 +1102,57 @@ export function WorkflowsTab() {
                       return dockerResult;
                     } else {
                       addRunLog({ level: "warn", message: `No Docker container for ${platform}. Create one in Servers tab.` });
-                      addRunLog({ level: "info", message: "Falling back to local build..." });
+                      addRunLog({ level: "info", message: "Checking for cross-compilation support..." });
                     }
                   } catch (dockerError: any) {
                     addRunLog({ level: "warn", message: `Docker not available: ${dockerError}` });
-                    addRunLog({ level: "info", message: "Falling back to local build..." });
+                    addRunLog({ level: "info", message: "Checking for cross-compilation support..." });
+                  }
+                  
+                  // Cross-compilation for Windows on macOS/Linux
+                  if (platform === "windows") {
+                    addRunLog({ level: "info", message: "Setting up Windows cross-compilation..." });
+                    
+                    // Check if it's a Tauri build
+                    if (cmd === "npm" && args.some(arg => arg.includes("tauri"))) {
+                      addRunLog({ level: "info", message: "Detected Tauri project - configuring Windows target" });
+                      
+                      // Install Rust Windows target if not already installed
+                      try {
+                        addRunLog({ level: "command", message: "rustup target add x86_64-pc-windows-gnu" });
+                        await invoke<string>("run_command", {
+                          command: "rustup",
+                          args: ["target", "add", "x86_64-pc-windows-gnu"],
+                          cwd: cwd
+                        });
+                        addRunLog({ level: "success", message: "Windows Rust target installed" });
+                      } catch (e: any) {
+                        addRunLog({ level: "warn", message: "Could not add Rust target (may already be installed)" });
+                      }
+                      
+                      // Modify the build command to target Windows
+                      const modifiedArgs = [...args, "--target", "x86_64-pc-windows-gnu"];
+                      addRunLog({ level: "command", message: `${cmd} ${modifiedArgs.join(" ")}` });
+                      addRunLog({ level: "info", message: "Building for Windows with cross-compilation..." });
+                      
+                      try {
+                        const result = await invoke<string>("run_command", { 
+                          command: cmd,
+                          args: modifiedArgs,
+                          cwd: cwd
+                        });
+                        addRunLog({ level: "success", message: "Windows build completed via cross-compilation" });
+                        return result;
+                      } catch (buildError: any) {
+                        const errorStr = typeof buildError === 'string' ? buildError : JSON.stringify(buildError);
+                        if (errorStr.includes("mingw") || errorStr.includes("linker")) {
+                          addRunLog({ level: "error", message: "mingw-w64 not found. Install it to cross-compile for Windows:" });
+                          addRunLog({ level: "info", message: "  macOS: brew install mingw-w64" });
+                          addRunLog({ level: "info", message: "  Linux: sudo apt install mingw-w64" });
+                        }
+                        throw buildError;
+                      }
+                    }
                   }
                 }
                 

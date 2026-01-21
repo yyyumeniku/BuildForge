@@ -1,47 +1,57 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, Box, Download, Settings, X, Gauge } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { invoke } from "@tauri-apps/api/tauri";
 
-// Fastfetch-style ASCII art - exact replicas
+// Fastfetch ASCII art - exact from fastfetch source
 const OS_ASCII: Record<string, string[]> = {
   macos: [
-    "                    c.'          ",
+    "                    'c.          ",
     "                 ,xNMM.          ",
     "               .OMMMMo           ",
-    "               lMM'              ",
-    "     .;loddo:.  .olloddol;.      ",
+    "               OMMM0,            ",
+    "     .;loddo:' loolloddol;.      ",
     "   cKMMMMMMMMMMNWMMMMMMMMMM0:    ",
-    "  .KMMMMMMMMMMMMMMMMMMMMMMMWN.   ",
-    "  ;MMMMMMMMMMMMMMMMMMMMMMMMMM;   ",
-    "  :MMMMMMMMMMMMMMMMMMMMMMMMMM:   ",
-    "  .MMMMMMMMMMMMMMMMMMMMMMMMM.    ",
-    "   'WMMMMMMMMMMMMMMMMMMMMMW'     ",
-    "    ;KMMMMMMMMMMMMMMMMMMK;       ",
-    "       'coWMMMMMMMWoc'           ",
+    " .KMMMMMMMMMMMMMMMMMMMMMMMWd.    ",
+    " XMMMMMMMMMMMMMMMMMMMMMMMX.      ",
+    ";MMMMMMMMMMMMMMMMMMMMMMMM:       ",
+    ":MMMMMMMMMMMMMMMMMMMMMMMM:       ",
+    ".MMMMMMMMMMMMMMMMMMMMMMMMX.      ",
+    " kMMMMMMMMMMMMMMMMMMMMMMMMMWd.   ",
+    " .XMMMMMMMMMMMMMMMMMMMMMMMMMMk   ",
+    "  .XMMMMMMMMMMMMMMMMMMMMMMMMK.   ",
+    "    kMMMMMMMMMMMMMMMMMMMMMMd     ",
+    "     ;KMMMMMMMWXXWMMMMMMMk.      ",
+    "       .cooc,.    .,coo:.        ",
   ],
   linux: [
-    "        .---.        ",
-    "       /     \\       ",
-    "       \\.@-@./       ",
-    "       /`\\_/`\\       ",
-    "      //  _  \\\\      ",
-    "     | \\     )|_     ",
-    "    /`\\_`>  <_/ \\    ",
-    "    \\__/'---'\\__/    ",
+    "        #####           ",
+    "       #######          ",
+    "       ##O#O##          ",
+    "       #######          ",
+    "     ###########        ",
+    "    #############       ",
+    "   ###############      ",
+    "   ################     ",
+    "  #################     ",
+    "#####################   ",
+    "#####################   ",
+    "  #################     ",
   ],
   windows: [
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "                                     ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
-    "  ████████████████  ███████████████  ",
+    "         ,.=:!!t3Z3z.,              ",
+    "        :tt:::tt333EE3             ",
+    "        Et:::ztt33EEEL @Ee.,      ",
+    "       ;tt:::tt333EE7 ;EEEEEEttttt ",
+    "      :Et:::zt333EEQ. $EEEEEttttt  ",
+    "      it::::tt333EEF @EEEEEEttttt  ",
+    "     ;3=*^```\"*4EEV :EEEEEEttttt   ",
+    "     ,.=::::!t=., ` @EEEEEEtttz^   ",
+    "    ;::::::::zt33)   \"4EEEtttji    ",
+    "   :t::::::::tt33.:Z3z..  \"\" ,..g. ",
+    "   i::::::::zt33F AEEEtttt::::ztF  ",
+    "  ;:::::::::t33V ;EEEttttt::::t3   ",
+    "  E::::::::zt33L @EEEtttt::::z3F   ",
   ],
   unknown: [
     "    _______   ",
@@ -63,7 +73,7 @@ interface DockerContainer {
 
 interface ServerLog {
   timestamp: string;
-  level: "info" | "error" | "success";
+  level: "info" | "error" | "success" | "warn";
   message: string;
 }
 
@@ -106,12 +116,22 @@ export function ServersTab() {
   const healthCheckInterval = useRef<NodeJS.Timeout | null>(null);
   const systemInfoInterval = useRef<NodeJS.Timeout | null>(null);
 
-  const addLog = (level: "info" | "error" | "success", message: string) => {
+  const addLog = (level: "info" | "error" | "success" | "warn", message: string) => {
     setServerLogs(prev => [...prev, {
       timestamp: new Date().toISOString(),
       level,
       message
     }]);
+  };
+
+  // Get OS type for ASCII art (must be defined before useMemo)
+  const getOSType = (): string => {
+    if (!systemInfo) return "unknown";
+    const os = systemInfo.os.toLowerCase();
+    if (os.includes("macos") || os.includes("darwin")) return "macos";
+    if (os.includes("windows")) return "windows";
+    if (os.includes("linux") || os.includes("ubuntu") || os.includes("debian") || os.includes("fedora")) return "linux";
+    return "unknown";
   };
 
   // Auto-start local server on mount
@@ -138,20 +158,10 @@ export function ServersTab() {
   }, []);
 
   const loadSystemInfo = async (logInfo = false) => {
-    if (!systemInfo) setLoadingSystemInfo(true);
     try {
       const info = await invoke<SystemInfo>("get_system_info");
-      // Only update if values have actually changed (prevents unnecessary re-renders)
-      setSystemInfo(prev => {
-        if (!prev) return info;
-        // Compare key dynamic values
-        if (prev.cpu_usage_percent !== info.cpu_usage_percent ||
-            prev.memory_used_gb !== info.memory_used_gb ||
-            prev.disk_used_gb !== info.disk_used_gb) {
-          return info;
-        }
-        return prev;
-      });
+      // Always update to get latest values, but React will handle re-render optimization
+      setSystemInfo(info);
       if (logInfo) {
         addLog("info", `System: ${info.os} ${info.os_version} (${info.arch})`);
       }
@@ -161,9 +171,24 @@ export function ServersTab() {
         addLog("error", "Failed to load system information");
       }
     } finally {
-      setLoadingSystemInfo(false);
+      if (!systemInfo) setLoadingSystemInfo(false);
     }
   };
+  
+  // Memoize ASCII art to prevent re-renders
+  const asciiArt = useMemo(() => {
+    if (!systemInfo) return OS_ASCII.unknown.join('\n');
+    return (OS_ASCII[getOSType()] || OS_ASCII.unknown).join('\n');
+  }, [systemInfo?.os]);
+  
+  // Memoize OS color
+  const osColor = useMemo(() => {
+    const osType = getOSType();
+    if (osType === "macos") return "text-cyan-400";
+    if (osType === "linux") return "text-yellow-400";
+    if (osType === "windows") return "text-blue-400";
+    return "text-slate-400";
+  }, [systemInfo?.os]);
 
   // Check if Docker is available
   const checkDockerAvailable = async () => {
@@ -215,13 +240,22 @@ export function ServersTab() {
   // Create a Docker container for cross-platform builds
   const createDockerContainer = async (os: "windows" | "linux") => {
     setCreatingContainer(os);
+    
+    // Windows containers only work on Windows hosts
+    if (os === "windows") {
+      addLog("warn", "Windows containers require a Windows host.");
+      addLog("info", "BuildForge uses cross-compilation for Windows builds.");
+      addLog("info", "For Tauri apps: Install mingw-w64 for Windows cross-compilation");
+      addLog("info", "  macOS: brew install mingw-w64");
+      addLog("info", "  Linux: sudo apt install mingw-w64");
+      setCreatingContainer(null);
+      return;
+    }
+    
     addLog("info", `Creating ${os} Docker container for cross-platform builds...`);
     
     try {
-      const image = os === "linux" 
-        ? "ubuntu:22.04" 
-        : "mcr.microsoft.com/windows/servercore:ltsc2022";
-      
+      const image = "ubuntu:22.04";
       const containerName = `buildforge-${os}-builder`;
       
       // Pull the image first
@@ -242,9 +276,7 @@ export function ServersTab() {
           "--label", "buildforge",
           "-v", "/tmp/buildforge:/workspace",
           image,
-          os === "linux" ? "tail" : "ping",
-          os === "linux" ? "-f" : "-t",
-          os === "linux" ? "/dev/null" : "localhost"
+          "tail", "-f", "/dev/null"
         ],
         cwd: "/"
       });
@@ -370,16 +402,6 @@ export function ServersTab() {
     } finally {
       setInstallingDocker(false);
     }
-  };
-
-  // Get OS type for ASCII art
-  const getOSType = (): string => {
-    if (!systemInfo) return "unknown";
-    const os = systemInfo.os.toLowerCase();
-    if (os.includes("macos") || os.includes("darwin")) return "macos";
-    if (os.includes("windows")) return "windows";
-    if (os.includes("linux") || os.includes("ubuntu") || os.includes("debian") || os.includes("fedora")) return "linux";
-    return "unknown";
   };
 
   // Auto-scroll logs
@@ -609,13 +631,8 @@ export function ServersTab() {
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 font-mono text-sm">
             <div className="flex gap-6">
               {/* ASCII Art */}
-              <pre className={`hidden md:block text-xs leading-tight flex-shrink-0 m-0 ${
-                getOSType() === "macos" ? "text-cyan-400" :
-                getOSType() === "linux" ? "text-yellow-400" :
-                getOSType() === "windows" ? "text-blue-400" :
-                "text-slate-400"
-              }`}>
-                {(OS_ASCII[getOSType()] || OS_ASCII.unknown).join('\n')}
+              <pre className={`hidden md:block text-xs leading-tight flex-shrink-0 m-0 ${osColor}`}>
+                {asciiArt}
               </pre>
               
               {/* System Info - Fastfetch style */}
@@ -707,15 +724,23 @@ export function ServersTab() {
                   <div className={`w-2 h-2 rounded-full ${localServerRunning ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                   <span className="text-slate-400">localhost:9876</span>
                 </div>
-                {dockerEnabled && (
-                  <div className="flex items-center gap-2">
-                    <Box className="w-4 h-4 text-blue-400" />
-                    <span className="text-slate-400">Docker: {dockerContainers.length} containers</span>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <Box className={`w-4 h-4 ${dockerEnabled ? 'text-blue-400' : 'text-slate-600'}`} />
+                  <span className="text-slate-400">
+                    Docker: {dockerEnabled ? `${dockerContainers.length} containers` : 'disabled'}
+                  </span>
+                  {!dockerEnabled && (
+                    <button
+                      onClick={() => setShowConfigModal(true)}
+                      className="px-2 py-0.5 text-xs bg-blue-600 hover:bg-blue-500 rounded text-white"
+                    >
+                      Enable
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">OS Target:</span>
+                <span className="text-xs text-slate-500">OS:</span>
                 <span className="px-2 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">{getOSType()}</span>
               </div>
             </div>
@@ -891,35 +916,33 @@ export function ServersTab() {
                   )}
                   
                   {/* Create Container Buttons */}
-                  <div className="flex flex-wrap gap-2">
-                    {!dockerContainers.find(c => c.os === "linux") && (
-                      <button
-                        onClick={() => createDockerContainer("linux")}
-                        disabled={creatingContainer !== null}
-                        className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
-                      >
-                        {creatingContainer === "linux" ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Plus className="w-4 h-4" />
-                        )}
-                        Add Linux Container
-                      </button>
-                    )}
-                    {!dockerContainers.find(c => c.os === "windows") && getOSType() !== "linux" && (
-                      <button
-                        onClick={() => createDockerContainer("windows")}
-                        disabled={creatingContainer !== null}
-                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
-                      >
-                        {creatingContainer === "windows" ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Plus className="w-4 h-4" />
-                        )}
-                        Add Windows Container
-                      </button>
-                    )}
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {!dockerContainers.find(c => c.os === "linux") && (
+                        <button
+                          onClick={() => createDockerContainer("linux")}
+                          disabled={creatingContainer !== null}
+                          className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {creatingContainer === "linux" ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Plus className="w-4 h-4" />
+                          )}
+                          Add Linux Container
+                        </button>
+                      )}
+                    </div>
+                    <div className="p-3 bg-slate-800 rounded border border-slate-700">
+                      <p className="text-xs text-slate-400 mb-2">
+                        <strong className="text-slate-300">Cross-Platform Building:</strong>
+                      </p>
+                      <ul className="text-xs text-slate-500 space-y-1 ml-4 list-disc">
+                        <li>Linux builds: Use Docker container above</li>
+                        <li>Windows builds: Requires mingw-w64 (install: <code className="text-cyan-400">brew install mingw-w64</code>)</li>
+                        <li>macOS builds: Native on macOS, requires macOS host otherwise</li>
+                      </ul>
+                    </div>
                   </div>
                 </div>
               ) : (
