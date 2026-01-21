@@ -177,8 +177,8 @@ export function ServersTab() {
   
   // Memoize ASCII art to prevent re-renders
   const asciiArt = useMemo(() => {
-    if (!systemInfo) return OS_ASCII.unknown.join('\n');
-    return (OS_ASCII[getOSType()] || OS_ASCII.unknown).join('\n');
+    if (!systemInfo) return "";
+    return (OS_ASCII[getOSType()] || []).join('\n');
   }, [systemInfo?.os]);
   
   // Memoize OS color
@@ -193,18 +193,37 @@ export function ServersTab() {
   // Check if Docker is available
   const checkDockerAvailable = async () => {
     try {
-      const result = await invoke<string>("run_command", { 
+      // First check if Docker command exists
+      const versionResult = await invoke<string>("run_command", { 
         command: "docker", 
         args: ["--version"],
         cwd: "/"
       });
-      if (result) {
+      
+      if (!versionResult) {
+        setDockerEnabled(false);
+        return;
+      }
+      
+      addLog("info", "Docker detected: " + versionResult.trim());
+      
+      // Now check if Docker daemon is actually running
+      try {
+        await invoke<string>("run_command", { 
+          command: "docker", 
+          args: ["ps"],
+          cwd: "/"
+        });
         setDockerEnabled(true);
-        addLog("info", "Docker detected: " + result.trim());
+        addLog("success", "Docker is running and ready");
         loadDockerContainers();
+      } catch {
+        setDockerEnabled(false);
+        addLog("warn", "Docker is installed but not running. Please start Docker Desktop.");
       }
     } catch {
       setDockerEnabled(false);
+      addLog("warn", "Docker is not installed. Install from docker.com");
     }
   };
 
@@ -251,71 +270,81 @@ export function ServersTab() {
     
     try {
       let image: string;
+      let platform: string | undefined;
       let setupCommands: string[];
       
       if (os === "windows") {
-        // Use Wine container for Windows builds
-        image = "tobix/pywine:3.9";
+        // ARM64-optimized Wine container (much smaller and faster on Apple Silicon)
+        image = "scottyhardy/docker-wine:latest";
+        platform = "linux/arm64"; // Use ARM64 for Apple Silicon
         setupCommands = [
-          "apt-get update && apt-get install -y curl build-essential git",
+          "dpkg --add-architecture i386",
+          "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git build-essential",
           "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
-          "apt-get install -y nodejs",
-          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
-          "rustup target add x86_64-pc-windows-gnu"
+          "apt-get install -y --no-install-recommends nodejs",
+          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal",
+          "apt-get clean && rm -rf /var/lib/apt/lists/*"
         ];
       } else if (os === "linux") {
-        image = "ubuntu:22.04";
+        // ARM64-optimized Alpine Linux (10x smaller than Ubuntu)
+        image = "node:20-alpine";
+        platform = "linux/arm64";
         setupCommands = [
-          "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl build-essential git libssl-dev pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf",
-          "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
-          "apt-get install -y nodejs",
-          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+          "apk add --no-cache curl git build-base openssl-dev pkgconfig gtk+3.0-dev webkit2gtk-dev librsvg-dev patchelf",
+          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal",
+          "rm -rf /var/cache/apk/*"
         ];
       } else {
-        // macOS - note: true macOS containers don't exist, but we can use OSXCross
-        addLog("warn", "macOS containers are experimental. Using OSXCross for cross-compilation.");
-        image = "ghcr.io/shepherdjerred/macos-cross-compiler:latest";
+        // ARM64-optimized OSXCross (minimal Alpine base)
+        image = "messense/cargo-zigbuild:latest";
+        platform = "linux/arm64";
         setupCommands = [
-          "apt-get update && apt-get install -y curl git",
-          "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
-          "apt-get install -y nodejs"
+          "apk add --no-cache nodejs npm git",
+          "rm -rf /var/cache/apk/*"
         ];
       }
       
       const containerName = `buildforge-${os}-builder`;
       
-      // Pull the image first
-      addLog("info", `Pulling ${image}...`);
+      // Pull the image with platform specification
+      addLog("info", `Pulling ${image} for ${platform}...`);
+      const pullArgs = ["pull"];
+      if (platform) pullArgs.push("--platform", platform);
+      pullArgs.push(image);
+      
       await invoke<string>("run_command", {
         command: "docker",
-        args: ["pull", image],
+        args: pullArgs,
         cwd: "/"
       });
       
-      // Create and start the container
-      addLog("info", `Creating container ${containerName}...`);
+      // Create and start the container with volume mount (no copying needed!)
+      addLog("info", `Creating container ${containerName} with persistent volume...`);
+      const runArgs = [
+        "run", "-d",
+        "--name", containerName,
+        "--label", "buildforge",
+        "-v", "/tmp/buildforge:/workspace", // Shared volume for zero-copy builds
+        "--tmpfs", "/tmp:exec", // Fast tmpfs for build artifacts
+      ];
+      if (platform) runArgs.push("--platform", platform);
+      runArgs.push(image, "tail", "-f", "/dev/null");
+      
       await invoke<string>("run_command", {
         command: "docker",
-        args: [
-          "run", "-d",
-          "--name", containerName,
-          "--label", "buildforge",
-          "-v", "/tmp/buildforge:/workspace",
-          image,
-          "tail", "-f", "/dev/null"
-        ],
+        args: runArgs,
         cwd: "/"
       });
       
-      addLog("success", `Container created! Installing build dependencies...`);
+      addLog("success", `Container created! Installing minimal build dependencies...`);
       
       // Install all build tools
       for (const cmd of setupCommands) {
-        addLog("info", `Running: ${cmd.substring(0, 50)}...`);
+        addLog("info", `Running: ${cmd.substring(0, 60)}...`);
         try {
           await invoke<string>("run_command", {
             command: "docker",
-            args: ["exec", containerName, "bash", "-c", cmd],
+            args: ["exec", containerName, "sh", "-c", cmd],
             cwd: "/"
           });
         } catch (e: any) {
@@ -323,7 +352,7 @@ export function ServersTab() {
         }
       }
       
-      addLog("success", `${os} Docker container ready for builds!`);
+      addLog("success", `${os} Docker container ready! (optimized for ARM64)`);
       loadDockerContainers();
     } catch (error: any) {
       addLog("error", `Failed to create ${os} container: ${error}`);
@@ -646,6 +675,34 @@ export function ServersTab() {
                 <Settings className="w-4 h-4" />
                 Config
               </button>
+              {dockerEnabled ? (
+                <div className="flex items-center gap-2 px-3 py-2 bg-green-900/30 border border-green-600 rounded-lg">
+                  <Box className="w-4 h-4 text-green-400" />
+                  <span className="text-green-400 text-sm font-medium">Docker Running</span>
+                </div>
+              ) : (
+                <button
+                  onClick={async () => {
+                    addLog("info", "Opening Docker Desktop...");
+                    try {
+                      await invoke<string>("run_command", {
+                        command: "open",
+                        args: ["-a", "Docker"],
+                        cwd: "/"
+                      });
+                      addLog("success", "Docker Desktop opened. Waiting for it to start...");
+                      setTimeout(() => checkDockerAvailable(), 3000);
+                    } catch (e: any) {
+                      addLog("error", `Failed to open Docker: ${e}`);
+                    }
+                  }}
+                  className="flex items-center gap-2 px-3 py-2 bg-red-900/30 border border-red-600 rounded-lg text-sm font-medium text-red-400 hover:bg-red-900/50"
+                  title="Click to open Docker Desktop"
+                >
+                  <Box className="w-4 h-4" />
+                  Docker Not Running - Click to Open
+                </button>
+              )}
               <button
                 onClick={localServerRunning ? stopLocalServer : startLocalServer}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${

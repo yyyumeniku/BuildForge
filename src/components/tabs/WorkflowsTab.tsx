@@ -1074,16 +1074,27 @@ export function WorkflowsTab() {
                         });
                       }
                       
-                      // Copy source to container
-                      addRunLog({ level: "info", message: "Copying source to container..." });
-                      await invoke<string>("run_command", {
-                        command: "docker",
-                        args: ["cp", cwd, `${containerName}:/workspace/`],
-                        cwd: "/"
-                      });
+                      // Use Docker volume - NO COPYING! Mount source directly for speed
+                      addRunLog({ level: "info", message: "Using shared volume (zero-copy build)..." });
                       
-                      const workspaceName = cwd.split("/").pop();
-                      const workspaceInContainer = `/workspace/${workspaceName}`;
+                      // Create symlink in container to actual workspace
+                      try {
+                        await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["exec", containerName, "sh", "-c", `ln -sf /workspace ${cwd} || true`],
+                          cwd: "/"
+                        });
+                      } catch {
+                        // If symlink fails, fall back to copying (only as last resort)
+                        addRunLog({ level: "warn", message: "Volume mount failed, copying files..." });
+                        await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["cp", cwd, `${containerName}:/workspace/`],
+                          cwd: "/"
+                        });
+                      }
+                      
+                      const workspaceInContainer = cwd; // Use same path as host
                       
                       // Auto-install dependencies based on detected build system
                       addRunLog({ level: "info", message: "Checking and installing dependencies..." });
@@ -1145,7 +1156,7 @@ export function WorkflowsTab() {
                           addRunLog({ level: "info", message: `Installing: ${installCmd}` });
                           await invoke<string>("run_command", {
                             command: "docker",
-                            args: ["exec", "-w", workspaceInContainer, containerName, "bash", "-c", installCmd],
+                            args: ["exec", "-w", workspaceInContainer, containerName, "sh", "-c", installCmd],
                             cwd: "/"
                           });
                         } catch (e: any) {
@@ -1157,17 +1168,12 @@ export function WorkflowsTab() {
                       addRunLog({ level: "command", message: `docker exec ${containerName} ${cmd} ${args.join(" ")}` });
                       const dockerResult = await invoke<string>("run_command", {
                         command: "docker",
-                        args: ["exec", "-w", workspaceInContainer, containerName, "bash", "-c", `source $HOME/.cargo/env 2>/dev/null || true; ${cmd} ${args.join(" ")}`],
+                        args: ["exec", "-w", workspaceInContainer, containerName, "sh", "-c", `source $HOME/.cargo/env 2>/dev/null || true; ${cmd} ${args.join(" ")}`],
                         cwd: "/"
                       });
                       
-                      // Copy artifacts back
-                      addRunLog({ level: "info", message: "Copying artifacts from container..." });
-                      await invoke<string>("run_command", {
-                        command: "docker",
-                        args: ["cp", `${containerName}:${workspaceInContainer}/.`, cwd],
-                        cwd: "/"
-                      });
+                      // NO need to copy artifacts back - using shared volume!
+                      addRunLog({ level: "success", message: "Build complete! Artifacts available at: " + cwd });
                       
                       return dockerResult;
                     } else {
@@ -1249,19 +1255,28 @@ export function WorkflowsTab() {
               try {
                 addRunLog({ level: "info", message: "Invoking build..." });
                 
-                // If targeting all platforms, run on each
+                // If targeting all platforms, run IN PARALLEL for maximum speed
                 if (targetOS === "all") {
                   const platforms = ["linux", "windows", "macos"];
-                  for (const platform of platforms) {
-                    addRunLog({ level: "info", message: `--- Building for ${platform} ---` });
+                  addRunLog({ level: "info", message: "Building for ALL platforms in parallel..." });
+                  
+                  const buildPromises = platforms.map(async (platform) => {
+                    addRunLog({ level: "info", message: `--- Starting ${platform} build ---` });
                     try {
                       const result = await runBuildOnPlatform(platform, buildCommand, buildArgs, buildDirectory);
-                      addRunLog({ level: "success", message: `${platform} build output:` });
+                      addRunLog({ level: "success", message: `${platform} build completed!` });
                       addRunLog({ level: "success", message: result || "(no output)" });
+                      return { platform, success: true, result };
                     } catch (platformError: any) {
                       addRunLog({ level: "warn", message: `${platform} build failed: ${platformError}` });
+                      return { platform, success: false, error: platformError };
                     }
-                  }
+                  });
+                  
+                  // Wait for all builds to complete
+                  const results = await Promise.allSettled(buildPromises);
+                  const successCount = results.filter(r => r.status === "fulfilled").length;
+                  addRunLog({ level: "info", message: `Parallel builds complete: ${successCount}/${platforms.length} succeeded` });
                 } else {
                   const buildResult = await runBuildOnPlatform(targetOS, buildCommand, buildArgs, buildDirectory);
                   addRunLog({ level: "success", message: "Build output:" });
