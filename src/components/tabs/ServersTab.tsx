@@ -1,45 +1,55 @@
 import { useEffect, useState, useRef } from "react";
-import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, Cpu, HardDrive, MemoryStick, Monitor, User, Clock, Package, Box, ChevronDown, ChevronUp, AlertTriangle, Download } from "lucide-react";
+import { Plus, Server as ServerIcon, Wifi, Trash2, RefreshCw, Search, Play, Square, Terminal, Box, Download, Settings, X, Gauge } from "lucide-react";
 import { useAppStore } from "../../store/appStore";
 import { invoke } from "@tauri-apps/api/tauri";
 
-// OS-specific ASCII art (like neofetch/fastfetch) - using array for proper line display
+// Fastfetch-style ASCII art - exact replicas
 const OS_ASCII: Record<string, string[]> = {
   macos: [
-    "        .:'        ",
-    "    __ :'__        ",
-    " .'`  `-'  `'.     ",
-    ":  .-'  '-.  :     ",
-    ":  :      :  :     ",
-    ":__:______:__:     ",
-    "    `------'       ",
+    "                    c.'          ",
+    "                 ,xNMM.          ",
+    "               .OMMMMo           ",
+    "               lMM'              ",
+    "     .;loddo:.  .olloddol;.      ",
+    "   cKMMMMMMMMMMNWMMMMMMMMMM0:    ",
+    "  .KMMMMMMMMMMMMMMMMMMMMMMMWN.   ",
+    "  ;MMMMMMMMMMMMMMMMMMMMMMMMMM;   ",
+    "  :MMMMMMMMMMMMMMMMMMMMMMMMMM:   ",
+    "  .MMMMMMMMMMMMMMMMMMMMMMMMM.    ",
+    "   'WMMMMMMMMMMMMMMMMMMMMMW'     ",
+    "    ;KMMMMMMMMMMMMMMMMMMK;       ",
+    "       'coWMMMMMMMWoc'           ",
   ],
   linux: [
-    "      .--.         ",
-    "     |o_o |        ",
-    "     |:_/ |        ",
-    "    //   \\ \\       ",
-    "   (|     | )      ",
-    "  /'\\_   _/`\\      ",
-    "  \\___)=(___/      ",
+    "        .---.        ",
+    "       /     \\       ",
+    "       \\.@-@./       ",
+    "       /`\\_/`\\       ",
+    "      //  _  \\\\      ",
+    "     | \\     )|_     ",
+    "    /`\\_`>  <_/ \\    ",
+    "    \\__/'---'\\__/    ",
   ],
   windows: [
-    " ██████  ██████    ",
-    " ██████  ██████    ",
-    " ██████  ██████    ",
-    "                   ",
-    " ██████  ██████    ",
-    " ██████  ██████    ",
-    " ██████  ██████    ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "                                     ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
+    "  ████████████████  ███████████████  ",
   ],
   unknown: [
-    "    _______        ",
-    "   /       \\       ",
-    "  |  ?   ? |       ",
-    "  |    ^   |       ",
-    "  |  \\___/ |       ",
-    "   \\_______/       ",
-    "                   ",
+    "    _______   ",
+    "   /       \\  ",
+    "  |  ?   ? | ",
+    "  |    ^   | ",
+    "  |  \\___/ | ",
+    "   \\_______/ ",
   ],
 };
 
@@ -64,19 +74,23 @@ interface SystemInfo {
   arch: string;
   cpu: string;
   cpu_cores: number;
+  cpu_usage_percent: number;
   memory_total_gb: number;
-  memory_available_gb: number;
+  memory_used_gb: number;
   disk_total_gb: number;
-  disk_available_gb: number;
+  disk_used_gb: number;
   uptime_hours: number;
   package_manager: string;
   shell: string;
   username: string;
+  gpu: string;
+  kernel: string;
 }
 
 export function ServersTab() {
   const { servers, setServers } = useAppStore();
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showConfigModal, setShowConfigModal] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [localServerRunning, setLocalServerRunning] = useState(true); // Auto-start enabled
   const [newServer, setNewServer] = useState({ name: "", address: "", port: "9999", targetOS: "any" as "windows" | "macos" | "linux" | "any" });
@@ -87,10 +101,10 @@ export function ServersTab() {
   const [loadingSystemInfo, setLoadingSystemInfo] = useState(true);
   const [dockerContainers, setDockerContainers] = useState<DockerContainer[]>([]);
   const [dockerEnabled, setDockerEnabled] = useState(false);
-  const [expandedServer, setExpandedServer] = useState<string | null>("localhost");
   const [creatingContainer, setCreatingContainer] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const healthCheckInterval = useRef<NodeJS.Timeout | null>(null);
+  const systemInfoInterval = useRef<NodeJS.Timeout | null>(null);
 
   const addLog = (level: "info" | "error" | "success", message: string) => {
     setServerLogs(prev => [...prev, {
@@ -104,28 +118,38 @@ export function ServersTab() {
   useEffect(() => {
     addLog("info", "Initializing BuildForge client...");
     startLocalServer();
-    loadSystemInfo();
+    loadSystemInfo(true);
     checkDockerAvailable();
     
     // Start health check interval
     healthCheckInterval.current = setInterval(checkAllServersHealth, 10000); // Every 10 seconds
     
+    // Refresh system info every 5 seconds for live CPU/RAM updates
+    systemInfoInterval.current = setInterval(() => loadSystemInfo(false), 5000);
+    
     return () => {
       if (healthCheckInterval.current) {
         clearInterval(healthCheckInterval.current);
       }
+      if (systemInfoInterval.current) {
+        clearInterval(systemInfoInterval.current);
+      }
     };
   }, []);
 
-  const loadSystemInfo = async () => {
-    setLoadingSystemInfo(true);
+  const loadSystemInfo = async (logInfo = false) => {
+    if (!systemInfo) setLoadingSystemInfo(true);
     try {
       const info = await invoke<SystemInfo>("get_system_info");
       setSystemInfo(info);
-      addLog("info", `System: ${info.os} ${info.os_version} (${info.arch})`);
+      if (logInfo) {
+        addLog("info", `System: ${info.os} ${info.os_version} (${info.arch})`);
+      }
     } catch (error) {
       console.error("Failed to load system info:", error);
-      addLog("error", "Failed to load system information");
+      if (logInfo) {
+        addLog("error", "Failed to load system information");
+      }
     } finally {
       setLoadingSystemInfo(false);
     }
@@ -494,259 +518,157 @@ export function ServersTab() {
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        {/* Local Server Card with System Specs */}
+        {/* Local Server Card - Compact with fastfetch-style display */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-2xl font-bold text-white">Local Server</h2>
-            <button
-              onClick={localServerRunning ? stopLocalServer : startLocalServer}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
-                localServerRunning 
-                  ? "bg-red-600 hover:bg-red-500 text-white" 
-                  : "bg-green-600 hover:bg-green-500 text-white"
-              }`}
-            >
-              {localServerRunning ? (
-                <>
-                  <Square className="w-4 h-4" />
-                  Stop Server
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4" />
-                  Start Server
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowConfigModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium text-white"
+              >
+                <Settings className="w-4 h-4" />
+                Config
+              </button>
+              <button
+                onClick={localServerRunning ? stopLocalServer : startLocalServer}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+                  localServerRunning 
+                    ? "bg-red-600 hover:bg-red-500 text-white" 
+                    : "bg-green-600 hover:bg-green-500 text-white"
+                }`}
+              >
+                {localServerRunning ? (
+                  <>
+                    <Square className="w-4 h-4" />
+                    Stop
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" />
+                    Start
+                  </>
+                )}
+              </button>
+            </div>
           </div>
           
-          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-            {/* Server Header - Clickable */}
-            <button
-              onClick={() => setExpandedServer(expandedServer === "localhost" ? null : "localhost")}
-              className="w-full flex items-center gap-4 p-4 hover:bg-slate-700/50"
-            >
-              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                localServerRunning ? "bg-green-600/20" : "bg-slate-700"
+          {/* Fastfetch-style System Info Card */}
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 font-mono text-sm">
+            <div className="flex gap-6">
+              {/* ASCII Art */}
+              <div className={`hidden md:block text-xs leading-tight flex-shrink-0 ${
+                getOSType() === "macos" ? "text-cyan-400" :
+                getOSType() === "linux" ? "text-yellow-400" :
+                getOSType() === "windows" ? "text-blue-400" :
+                "text-slate-400"
               }`}>
-                <ServerIcon className={`w-5 h-5 ${
-                  localServerRunning ? "text-green-400" : "text-slate-400"
-                }`} />
+                {(OS_ASCII[getOSType()] || OS_ASCII.unknown).map((line, i) => (
+                  <div key={i} className="whitespace-pre">{line}</div>
+                ))}
               </div>
-              <div className="flex-1 text-left">
-                <div className="flex items-center gap-2">
-                  <p className="font-medium text-white">Local Server</p>
-                  <span className={`px-2 py-0.5 text-xs rounded ${
-                    localServerRunning ? "bg-green-500/20 text-green-400" : "bg-slate-600 text-slate-400"
-                  }`}>
-                    {localServerRunning ? "online" : "offline"}
-                  </span>
-                  <span className="px-2 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">
-                    {getOSType()}
-                  </span>
+              
+              {/* System Info - Fastfetch style */}
+              {loadingSystemInfo ? (
+                <div className="flex-1 flex items-center justify-center text-slate-500">
+                  <RefreshCw className="w-5 h-5 animate-spin mr-2" />
+                  Loading system info...
                 </div>
-                <p className="text-sm text-slate-500 mt-0.5">localhost:9876</p>
-              </div>
-              {expandedServer === "localhost" ? (
-                <ChevronUp className="w-5 h-5 text-slate-400" />
-              ) : (
-                <ChevronDown className="w-5 h-5 text-slate-400" />
-              )}
-            </button>
-            
-            {/* Expanded System Specs */}
-            {expandedServer === "localhost" && (
-              <div className="border-t border-slate-700 p-4 bg-slate-900/50">
-                <div className="flex items-start gap-6 font-mono">
-                  {/* OS-specific ASCII Art */}
-                  <div className={`text-xs leading-tight hidden lg:block ${
-                    getOSType() === "macos" ? "text-white" :
-                    getOSType() === "linux" ? "text-yellow-400" :
-                    getOSType() === "windows" ? "text-blue-400" :
-                    "text-slate-400"
-                  }`}>
-                    {(OS_ASCII[getOSType()] || OS_ASCII.unknown).map((line, i) => (
-                      <div key={i} className="whitespace-pre">{line}</div>
+              ) : systemInfo ? (
+                <div className="flex-1 space-y-0.5">
+                  {/* Header */}
+                  <div className="text-cyan-400 font-bold">{systemInfo.username}@{systemInfo.hostname}</div>
+                  <div className="text-slate-600">{"─".repeat(Math.min(40, (systemInfo.username + systemInfo.hostname).length + 1))}</div>
+                  
+                  {/* Info rows */}
+                  <div><span className="text-cyan-400">OS</span><span className="text-white">: {systemInfo.os} {systemInfo.os_version} {systemInfo.arch}</span></div>
+                  <div><span className="text-cyan-400">Kernel</span><span className="text-white">: {systemInfo.kernel}</span></div>
+                  <div><span className="text-cyan-400">Shell</span><span className="text-white">: {systemInfo.shell}</span></div>
+                  <div><span className="text-cyan-400">CPU</span><span className="text-white">: {systemInfo.cpu} ({systemInfo.cpu_cores} cores)</span></div>
+                  <div className="flex items-center">
+                    <span className="text-cyan-400">CPU Usage</span>
+                    <span className="text-white">: </span>
+                    <div className="flex-1 max-w-32 h-3 bg-slate-700 rounded ml-1 overflow-hidden">
+                      <div 
+                        className={`h-full transition-all ${
+                          systemInfo.cpu_usage_percent > 80 ? 'bg-red-500' :
+                          systemInfo.cpu_usage_percent > 50 ? 'bg-yellow-500' :
+                          'bg-green-500'
+                        }`}
+                        style={{ width: `${Math.min(100, systemInfo.cpu_usage_percent)}%` }}
+                      />
+                    </div>
+                    <span className="text-white ml-2">{systemInfo.cpu_usage_percent.toFixed(0)}%</span>
+                  </div>
+                  <div><span className="text-cyan-400">GPU</span><span className="text-white">: {systemInfo.gpu}</span></div>
+                  <div className="flex items-center">
+                    <span className="text-cyan-400">Memory</span>
+                    <span className="text-white">: </span>
+                    <div className="flex-1 max-w-32 h-3 bg-slate-700 rounded ml-1 overflow-hidden">
+                      <div 
+                        className={`h-full transition-all ${
+                          (systemInfo.memory_used_gb / systemInfo.memory_total_gb) > 0.8 ? 'bg-red-500' :
+                          (systemInfo.memory_used_gb / systemInfo.memory_total_gb) > 0.5 ? 'bg-yellow-500' :
+                          'bg-green-500'
+                        }`}
+                        style={{ width: `${(systemInfo.memory_used_gb / systemInfo.memory_total_gb) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-white ml-2">{systemInfo.memory_used_gb.toFixed(1)} / {systemInfo.memory_total_gb.toFixed(1)} GB ({((systemInfo.memory_used_gb / systemInfo.memory_total_gb) * 100).toFixed(0)}%)</span>
+                  </div>
+                  <div className="flex items-center">
+                    <span className="text-cyan-400">Disk (/)</span>
+                    <span className="text-white">: </span>
+                    <div className="flex-1 max-w-32 h-3 bg-slate-700 rounded ml-1 overflow-hidden">
+                      <div 
+                        className={`h-full transition-all ${
+                          (systemInfo.disk_used_gb / systemInfo.disk_total_gb) > 0.9 ? 'bg-red-500' :
+                          (systemInfo.disk_used_gb / systemInfo.disk_total_gb) > 0.7 ? 'bg-yellow-500' :
+                          'bg-green-500'
+                        }`}
+                        style={{ width: `${(systemInfo.disk_used_gb / systemInfo.disk_total_gb) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-white ml-2">{systemInfo.disk_used_gb.toFixed(0)} / {systemInfo.disk_total_gb.toFixed(0)} GB ({((systemInfo.disk_used_gb / systemInfo.disk_total_gb) * 100).toFixed(0)}%)</span>
+                  </div>
+                  <div><span className="text-cyan-400">Uptime</span><span className="text-white">: {
+                    systemInfo.uptime_hours >= 24 
+                      ? `${Math.floor(systemInfo.uptime_hours / 24)} days, ${Math.floor(systemInfo.uptime_hours % 24)} hours`
+                      : `${Math.floor(systemInfo.uptime_hours)} hours, ${Math.floor((systemInfo.uptime_hours % 1) * 60)} mins`
+                  }</span></div>
+                  <div><span className="text-cyan-400">Packages</span><span className="text-white">: {systemInfo.package_manager}</span></div>
+                  
+                  {/* Color palette like fastfetch */}
+                  <div className="flex gap-1 mt-2">
+                    {['bg-black', 'bg-red-600', 'bg-green-600', 'bg-yellow-600', 'bg-blue-600', 'bg-purple-600', 'bg-cyan-600', 'bg-white'].map((color, i) => (
+                      <div key={i} className={`w-4 h-4 rounded-sm ${color}`} />
                     ))}
                   </div>
-                  
-                  {/* System Info */}
-                  {loadingSystemInfo ? (
-                    <div className="flex-1 text-slate-500 text-sm">Loading system information...</div>
-                  ) : systemInfo ? (
-                    <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1 text-sm">
-                      <div className="flex items-center gap-2">
-                        <User className="w-4 h-4 text-cyan-400" />
-                        <span className="text-cyan-400 font-semibold">{systemInfo.username}@{systemInfo.hostname}</span>
-                      </div>
-                      <div className="text-slate-600 md:col-span-2">{"─".repeat(35)}</div>
-                      
-                      <div className="flex items-center gap-2">
-                        <Monitor className="w-4 h-4 text-blue-400" />
-                        <span className="text-blue-400">OS:</span>
-                        <span className="text-white">{systemInfo.os} {systemInfo.os_version}</span>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        <Cpu className="w-4 h-4 text-purple-400" />
-                        <span className="text-purple-400">CPU:</span>
-                        <span className="text-white">{systemInfo.cpu_cores} cores</span>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        <MemoryStick className="w-4 h-4 text-yellow-400" />
-                        <span className="text-yellow-400">RAM:</span>
-                        <span className="text-white">
-                          {systemInfo.memory_available_gb.toFixed(1)} / {systemInfo.memory_total_gb.toFixed(1)} GB
-                        </span>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        <HardDrive className="w-4 h-4 text-orange-400" />
-                        <span className="text-orange-400">Disk:</span>
-                        <span className="text-white">
-                          {systemInfo.disk_available_gb.toFixed(1)} / {systemInfo.disk_total_gb.toFixed(1)} GB
-                        </span>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-4 h-4 text-pink-400" />
-                        <span className="text-pink-400">Uptime:</span>
-                        <span className="text-white">
-                          {systemInfo.uptime_hours >= 24 
-                            ? `${Math.floor(systemInfo.uptime_hours / 24)}d ${Math.floor(systemInfo.uptime_hours % 24)}h`
-                            : `${systemInfo.uptime_hours.toFixed(1)}h`
-                          }
-                        </span>
-                      </div>
-                      
-                      <div className="flex items-center gap-2">
-                        <Package className="w-4 h-4 text-red-400" />
-                        <span className="text-red-400">Pkg:</span>
-                        <span className="text-white">{systemInfo.package_manager}</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex-1 text-red-400 text-sm">Failed to load system information</div>
-                  )}
                 </div>
-                
-                {/* Docker Support Section */}
-                <div className="mt-4 pt-4 border-t border-slate-700">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <Box className="w-4 h-4 text-blue-400" />
-                      <span className="text-sm font-medium text-white">Docker Cross-Platform Builds</span>
-                      {dockerEnabled ? (
-                        <span className="px-2 py-0.5 text-xs rounded bg-green-500/20 text-green-400">Available</span>
-                      ) : (
-                        <span className="px-2 py-0.5 text-xs rounded bg-red-500/20 text-red-400">Not Installed</span>
-                      )}
-                    </div>
+              ) : (
+                <div className="flex-1 text-red-400">Failed to load system information</div>
+              )}
+            </div>
+            
+            {/* Server Status Bar */}
+            <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-700">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${localServerRunning ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                  <span className="text-slate-400">localhost:9876</span>
+                </div>
+                {dockerEnabled && (
+                  <div className="flex items-center gap-2">
+                    <Box className="w-4 h-4 text-blue-400" />
+                    <span className="text-slate-400">Docker: {dockerContainers.length} containers</span>
                   </div>
-                  
-                  {dockerEnabled ? (
-                    <div className="space-y-3">
-                      {/* Warning for local Docker usage */}
-                      <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                        <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-                        <div className="text-xs text-yellow-400">
-                          <span className="font-medium">Warning:</span> Running Docker containers on your local machine uses local resources. For production builds, consider using an external server for better performance and isolation.
-                        </div>
-                      </div>
-                      
-                      <p className="text-xs text-slate-400">
-                        Create Docker containers to build for other platforms. BuildForge will automatically use these when building for a target OS you don't have a native server for.
-                      </p>
-                      
-                      {/* Existing containers */}
-                      {dockerContainers.length > 0 && (
-                        <div className="space-y-2">
-                          {dockerContainers.map(container => (
-                            <div key={container.id} className="flex items-center justify-between p-2 bg-slate-800 rounded-lg">
-                              <div className="flex items-center gap-2">
-                                <Box className={`w-4 h-4 ${container.status === "running" ? "text-green-400" : "text-slate-400"}`} />
-                                <span className="text-sm text-white">{container.name}</span>
-                                <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  container.os === "linux" ? "bg-orange-500/20 text-orange-400" : "bg-blue-500/20 text-blue-400"
-                                }`}>
-                                  {container.os}
-                                </span>
-                                <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                  container.status === "running" ? "bg-green-500/20 text-green-400" : "bg-slate-600 text-slate-400"
-                                }`}>
-                                  {container.status}
-                                </span>
-                              </div>
-                              <button
-                                onClick={() => deleteDockerContainer(container.id, container.name)}
-                                className="p-1.5 text-slate-500 hover:text-red-400"
-                                title="Remove container"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      
-                      {/* Create new container buttons */}
-                      <div className="flex gap-2">
-                        {!dockerContainers.find(c => c.os === "linux") && (
-                          <button
-                            onClick={() => createDockerContainer("linux")}
-                            disabled={creatingContainer !== null}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-xs font-medium text-white disabled:opacity-50"
-                          >
-                            {creatingContainer === "linux" ? (
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                            ) : (
-                              <Plus className="w-3 h-3" />
-                            )}
-                            Add Linux Container
-                          </button>
-                        )}
-                        {!dockerContainers.find(c => c.os === "windows") && getOSType() !== "linux" && (
-                          <button
-                            onClick={() => createDockerContainer("windows")}
-                            disabled={creatingContainer !== null}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-medium text-white disabled:opacity-50"
-                          >
-                            {creatingContainer === "windows" ? (
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                            ) : (
-                              <Plus className="w-3 h-3" />
-                            )}
-                            Add Windows Container
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-xs text-slate-500">
-                        Docker is not installed. Install Docker to enable cross-platform builds without additional servers.
-                      </p>
-                      <button
-                        onClick={installDocker}
-                        disabled={installingDocker || !systemInfo}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-medium text-white disabled:opacity-50"
-                      >
-                        {installingDocker ? (
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <Download className="w-3 h-3" />
-                        )}
-                        {installingDocker ? "Installing..." : `Install Docker (${systemInfo?.package_manager || "detect..."})`}
-                      </button>
-                      <p className="text-xs text-slate-600">
-                        Or install manually from <a href="https://docker.com" target="_blank" className="text-blue-400 hover:underline">docker.com</a>
-                      </p>
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
-            )}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">OS Target:</span>
+                <span className="px-2 py-0.5 text-xs rounded bg-purple-500/20 text-purple-400">{getOSType()}</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -847,6 +769,196 @@ export function ServersTab() {
           )}
         </div>
       </div>
+
+      {/* Config Modal */}
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 w-full max-w-2xl max-h-[80vh] overflow-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-white">Local Server Configuration</h3>
+              <button
+                onClick={() => setShowConfigModal(false)}
+                className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Docker Section */}
+            <div className="mb-6">
+              <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <Box className="w-5 h-5 text-blue-400" />
+                Docker Containers
+              </h4>
+              
+              {dockerEnabled ? (
+                <div className="space-y-4">
+                  {/* Docker Status */}
+                  <div className="flex items-center gap-2 text-sm text-green-400">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    Docker is running
+                  </div>
+                  
+                  {/* Existing Containers */}
+                  {dockerContainers.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-slate-400">Existing Containers</p>
+                      {dockerContainers.map((container) => (
+                        <div
+                          key={container.id}
+                          className="flex items-center justify-between p-3 bg-slate-900 rounded-lg border border-slate-700"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-8 h-8 rounded flex items-center justify-center ${
+                              container.os === "linux" ? "bg-orange-500/20" : "bg-blue-500/20"
+                            }`}>
+                              <ServerIcon className={`w-4 h-4 ${
+                                container.os === "linux" ? "text-orange-400" : "text-blue-400"
+                              }`} />
+                            </div>
+                            <div>
+                              <p className="text-white text-sm font-medium">{container.name}</p>
+                              <p className="text-xs text-slate-500">{container.os} • {container.status}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2 py-0.5 text-xs rounded ${
+                              container.status === "running" ? "bg-green-500/20 text-green-400" : "bg-slate-600 text-slate-400"
+                            }`}>
+                              {container.status}
+                            </span>
+                            <button
+                              onClick={() => deleteDockerContainer(container.id, container.name)}
+                              className="p-1.5 text-slate-500 hover:text-red-400 rounded hover:bg-slate-700"
+                              title="Remove container"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* Create Container Buttons */}
+                  <div className="flex flex-wrap gap-2">
+                    {!dockerContainers.find(c => c.os === "linux") && (
+                      <button
+                        onClick={() => createDockerContainer("linux")}
+                        disabled={creatingContainer !== null}
+                        className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                      >
+                        {creatingContainer === "linux" ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Plus className="w-4 h-4" />
+                        )}
+                        Add Linux Container
+                      </button>
+                    )}
+                    {!dockerContainers.find(c => c.os === "windows") && getOSType() !== "linux" && (
+                      <button
+                        onClick={() => createDockerContainer("windows")}
+                        disabled={creatingContainer !== null}
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                      >
+                        {creatingContainer === "windows" ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Plus className="w-4 h-4" />
+                        )}
+                        Add Windows Container
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4 p-4 bg-slate-900 rounded-lg border border-slate-700">
+                  <p className="text-sm text-slate-400">
+                    Docker is not installed. Install Docker to enable cross-platform builds without additional servers.
+                  </p>
+                  <button
+                    onClick={installDocker}
+                    disabled={installingDocker || !systemInfo}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                  >
+                    {installingDocker ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                    {installingDocker ? "Installing..." : `Install Docker (${systemInfo?.package_manager || "detect..."})`}
+                  </button>
+                  <p className="text-xs text-slate-600">
+                    Or install manually from <a href="https://docker.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">docker.com</a>
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* System Info Section */}
+            {systemInfo && (
+              <div className="mb-6">
+                <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                  <Gauge className="w-5 h-5 text-green-400" />
+                  System Information
+                </h4>
+                <div className="grid grid-cols-2 gap-4 p-4 bg-slate-900 rounded-lg border border-slate-700">
+                  <div>
+                    <p className="text-xs text-slate-500">Hostname</p>
+                    <p className="text-white font-mono">{systemInfo.hostname}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">OS</p>
+                    <p className="text-white font-mono">{systemInfo.os} {systemInfo.os_version}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">CPU</p>
+                    <p className="text-white font-mono">{systemInfo.cpu} ({systemInfo.cpu_cores} cores)</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Architecture</p>
+                    <p className="text-white font-mono">{systemInfo.arch}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">GPU</p>
+                    <p className="text-white font-mono">{systemInfo.gpu || "Unknown"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Kernel</p>
+                    <p className="text-white font-mono">{systemInfo.kernel || "Unknown"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Memory</p>
+                    <p className="text-white font-mono">{systemInfo.memory_used_gb.toFixed(1)} / {systemInfo.memory_total_gb.toFixed(1)} GB</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Disk</p>
+                    <p className="text-white font-mono">{systemInfo.disk_used_gb.toFixed(1)} / {systemInfo.disk_total_gb.toFixed(1)} GB</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Shell</p>
+                    <p className="text-white font-mono">{systemInfo.shell}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Package Manager</p>
+                    <p className="text-white font-mono">{systemInfo.package_manager || "Unknown"}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowConfigModal(false)}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-white text-sm font-medium"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Server Modal */}
       {showAddModal && (

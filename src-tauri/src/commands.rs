@@ -875,14 +875,17 @@ pub struct SystemInfo {
     pub arch: String,
     pub cpu: String,
     pub cpu_cores: u32,
+    pub cpu_usage_percent: f64,
     pub memory_total_gb: f64,
-    pub memory_available_gb: f64,
+    pub memory_used_gb: f64,
     pub disk_total_gb: f64,
-    pub disk_available_gb: f64,
+    pub disk_used_gb: f64,
     pub uptime_hours: f64,
     pub package_manager: String,
     pub shell: String,
     pub username: String,
+    pub gpu: String,
+    pub kernel: String,
 }
 
 #[tauri::command]
@@ -906,11 +909,14 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     // Get CPU info
     let (cpu, cpu_cores) = get_cpu_info();
     
-    // Get memory info
-    let (memory_total_gb, memory_available_gb) = get_memory_info();
+    // Get CPU usage
+    let cpu_usage_percent = get_cpu_usage();
     
-    // Get disk info
-    let (disk_total_gb, disk_available_gb) = get_disk_info();
+    // Get memory info (now returns total, used)
+    let (memory_total_gb, memory_used_gb) = get_memory_info();
+    
+    // Get disk info (now returns total, used)
+    let (disk_total_gb, disk_used_gb) = get_disk_info();
     
     // Get uptime
     let uptime_hours = get_uptime_hours();
@@ -921,7 +927,14 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     // Get shell
     let shell = std::env::var("SHELL")
         .or_else(|_| std::env::var("COMSPEC"))
+        .map(|s| s.split('/').last().unwrap_or(&s).to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+    
+    // Get GPU info
+    let gpu = get_gpu_info();
+    
+    // Get kernel version
+    let kernel = get_kernel_version();
     
     Ok(SystemInfo {
         hostname,
@@ -930,14 +943,17 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
         arch,
         cpu,
         cpu_cores,
+        cpu_usage_percent,
         memory_total_gb,
-        memory_available_gb,
+        memory_used_gb,
         disk_total_gb,
-        disk_available_gb,
+        disk_used_gb,
         uptime_hours,
         package_manager,
         shell,
         username,
+        gpu,
+        kernel,
     })
 }
 
@@ -1057,6 +1073,7 @@ fn get_memory_info() -> (f64, f64) {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
+        // Get total physical memory
         let total = Command::new("sysctl")
             .args(["-n", "hw.memsize"])
             .output()
@@ -1066,30 +1083,54 @@ fn get_memory_info() -> (f64, f64) {
             })
             .unwrap_or(0.0);
         
-        // Get available memory from vm_stat
+        // Use memory_pressure to get accurate used memory (like fastfetch does)
+        let memory_pressure = Command::new("memory_pressure")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        // Try to parse "System-wide memory free percentage: X%"
+        let mut used = 0.0;
+        for line in memory_pressure.lines() {
+            if line.contains("System-wide memory free percentage:") {
+                if let Some(pct_str) = line.split(':').nth(1) {
+                    let pct_str = pct_str.trim().trim_end_matches('%');
+                    if let Ok(free_pct) = pct_str.parse::<f64>() {
+                        used = total * (1.0 - free_pct / 100.0);
+                        return (total, used);
+                    }
+                }
+            }
+        }
+        
+        // Fallback: use vm_stat to calculate used memory
         let vm_stat = Command::new("vm_stat")
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
         
-        let mut free_pages: u64 = 0;
-        let mut inactive_pages: u64 = 0;
-        let page_size: u64 = 4096;
+        let page_size: u64 = 16384; // Modern macOS uses 16KB pages on Apple Silicon
+        let mut wired: u64 = 0;
+        let mut active: u64 = 0;
+        let mut compressed: u64 = 0;
         
         for line in vm_stat.lines() {
-            if line.contains("Pages free:") {
-                free_pages = line.split(':').nth(1)
-                    .map(|s| s.trim().trim_end_matches('.').parse().unwrap_or(0))
-                    .unwrap_or(0);
-            } else if line.contains("Pages inactive:") {
-                inactive_pages = line.split(':').nth(1)
-                    .map(|s| s.trim().trim_end_matches('.').parse().unwrap_or(0))
-                    .unwrap_or(0);
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() == 2 {
+                let value: u64 = parts[1].trim().trim_end_matches('.').parse().unwrap_or(0);
+                if line.contains("Pages wired down") {
+                    wired = value;
+                } else if line.contains("Pages active") {
+                    active = value;
+                } else if line.contains("Pages occupied by compressor") {
+                    compressed = value;
+                }
             }
         }
         
-        let available = ((free_pages + inactive_pages) * page_size) as f64 / 1024.0 / 1024.0 / 1024.0;
-        (total, available)
+        // Used = wired + active + compressed (this matches Activity Monitor)
+        used = ((wired + active + compressed) * page_size) as f64 / 1024.0 / 1024.0 / 1024.0;
+        (total, used)
     }
     
     #[cfg(target_os = "linux")]
@@ -1111,7 +1152,9 @@ fn get_memory_info() -> (f64, f64) {
             }
         }
         
-        (total as f64 / 1024.0 / 1024.0, available as f64 / 1024.0 / 1024.0)
+        let total_gb = total as f64 / 1024.0 / 1024.0;
+        let used_gb = (total - available) as f64 / 1024.0 / 1024.0;
+        (total_gb, used_gb)
     }
     
     #[cfg(target_os = "windows")]
@@ -1138,7 +1181,9 @@ fn get_memory_info() -> (f64, f64) {
             }
         }
         
-        (total as f64 / 1024.0 / 1024.0, free as f64 / 1024.0 / 1024.0)
+        let total_gb = total as f64 / 1024.0 / 1024.0;
+        let used_gb = (total - free) as f64 / 1024.0 / 1024.0;
+        (total_gb, used_gb)
     }
 }
 
@@ -1156,8 +1201,8 @@ fn get_disk_info() -> (f64, f64) {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
                 let total: u64 = parts[1].parse().unwrap_or(0);
-                let available: u64 = parts[3].parse().unwrap_or(0);
-                return (total as f64 / 1024.0 / 1024.0, available as f64 / 1024.0 / 1024.0);
+                let used: u64 = parts[2].parse().unwrap_or(0);
+                return (total as f64 / 1024.0 / 1024.0, used as f64 / 1024.0 / 1024.0);
             }
         }
         (0.0, 0.0)
@@ -1187,7 +1232,211 @@ fn get_disk_info() -> (f64, f64) {
             }
         }
         
-        (total as f64 / 1024.0 / 1024.0 / 1024.0, free as f64 / 1024.0 / 1024.0 / 1024.0)
+        let total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
+        let used_gb = (total - free) as f64 / 1024.0 / 1024.0 / 1024.0;
+        (total_gb, used_gb)
+    }
+}
+
+fn get_cpu_usage() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        // Use top in one-shot mode to get CPU usage
+        let output = Command::new("top")
+            .args(["-l", "1", "-n", "0", "-stats", "cpu"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        // Look for "CPU usage: X% user, Y% sys, Z% idle"
+        for line in output.lines() {
+            if line.contains("CPU usage:") {
+                // Parse user and sys percentages
+                let parts: Vec<&str> = line.split(',').collect();
+                let mut user = 0.0;
+                let mut sys = 0.0;
+                
+                for part in parts {
+                    if part.contains("user") {
+                        if let Some(pct) = part.split('%').next() {
+                            user = pct.trim().split_whitespace().last()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0.0);
+                        }
+                    } else if part.contains("sys") {
+                        if let Some(pct) = part.split('%').next() {
+                            sys = pct.trim().split_whitespace().last()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0.0);
+                        }
+                    }
+                }
+                return user + sys;
+            }
+        }
+        0.0
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+        use std::thread;
+        use std::time::Duration;
+        
+        fn read_cpu_stats() -> Option<(u64, u64)> {
+            let stat = fs::read_to_string("/proc/stat").ok()?;
+            let line = stat.lines().next()?;
+            let parts: Vec<u64> = line.split_whitespace()
+                .skip(1)
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            
+            if parts.len() >= 4 {
+                let idle = parts[3];
+                let total: u64 = parts.iter().sum();
+                Some((idle, total))
+            } else {
+                None
+            }
+        }
+        
+        if let Some((idle1, total1)) = read_cpu_stats() {
+            thread::sleep(Duration::from_millis(100));
+            if let Some((idle2, total2)) = read_cpu_stats() {
+                let idle_delta = idle2 - idle1;
+                let total_delta = total2 - total1;
+                if total_delta > 0 {
+                    return 100.0 * (1.0 - (idle_delta as f64 / total_delta as f64));
+                }
+            }
+        }
+        0.0
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("wmic")
+            .args(["cpu", "get", "loadpercentage", "/VALUE"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        for line in output.lines() {
+            if line.starts_with("LoadPercentage=") {
+                return line.split('=').nth(1)
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0.0);
+            }
+        }
+        0.0
+    }
+}
+
+fn get_gpu_info() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let output = Command::new("system_profiler")
+            .args(["SPDisplaysDataType", "-json"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        // Simple parsing - look for chipset_model or gpu name
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) {
+            if let Some(displays) = json.get("SPDisplaysDataType").and_then(|v| v.as_array()) {
+                if let Some(first) = displays.first() {
+                    if let Some(name) = first.get("sppci_model").and_then(|v| v.as_str()) {
+                        return name.to_string();
+                    }
+                    if let Some(name) = first.get("spdisplays_vendor").and_then(|v| v.as_str()) {
+                        return name.to_string();
+                    }
+                }
+            }
+        }
+        
+        // Fallback to simple grep
+        let output = Command::new("system_profiler")
+            .arg("SPDisplaysDataType")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        for line in output.lines() {
+            if line.contains("Chipset Model:") || line.contains("Chip:") {
+                return line.split(':').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
+            }
+        }
+        "Unknown GPU".to_string()
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let output = Command::new("lspci")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        for line in output.lines() {
+            if line.contains("VGA") || line.contains("3D") || line.contains("Display") {
+                return line.split(':').last().map(|s| s.trim().to_string()).unwrap_or_default();
+            }
+        }
+        "Unknown GPU".to_string()
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("wmic")
+            .args(["path", "win32_videocontroller", "get", "name", "/VALUE"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        
+        for line in output.lines() {
+            if line.starts_with("Name=") {
+                return line.split('=').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
+            }
+        }
+        "Unknown GPU".to_string()
+    }
+}
+
+fn get_kernel_version() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("uname")
+            .arg("-r")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        Command::new("uname")
+            .arg("-r")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("cmd")
+            .args(["/C", "ver"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        output
     }
 }
 
