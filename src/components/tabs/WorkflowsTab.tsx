@@ -751,7 +751,7 @@ export function WorkflowsTab() {
     startWorkflowRun(workflow.id);
     saveHistory();
     
-    addRunLog({ level: "info", message: "🚀 Starting workflow execution..." });
+    addRunLog({ level: "info", message: "Starting workflow execution..." });
     addRunLog({ level: "info", message: `Repository: ${selectedRepo.owner}/${selectedRepo.repo}` });
     addRunLog({ level: "info", message: `Workflow: ${workflow.name}` });
     addRunLog({ level: "info", message: `Working directory: ${selectedRepo.path}` });
@@ -973,6 +973,7 @@ export function WorkflowsTab() {
               break;
               
             case "build":
+              addRunLog({ level: "info", message: "=== BUILD NODE START ===" });
               const buildCmd = node.config.command || detectBuildCommand(selectedRepo);
               
               // Debug logging
@@ -981,6 +982,8 @@ export function WorkflowsTab() {
               addRunLog({ level: "info", message: `Build command: ${buildCmd}` });
               
               if (!buildCmd || buildCmd.trim() === "") {
+                addRunLog({ level: "error", message: "No build command could be determined!" });
+                addRunLog({ level: "error", message: "Please specify a custom build command in the node properties." });
                 throw new Error("No build command detected. Make sure the repository has a valid build system.");
               }
               
@@ -991,17 +994,25 @@ export function WorkflowsTab() {
               // Run build locally on this machine/server
               addRunLog({ level: "command", message: `${buildCmd}` });
               addRunLog({ level: "info", message: `Working directory: ${buildDirectory}` });
-              const [buildCommand, ...buildArgs] = buildCmd.split(" ");
+              
+              // Parse command and args more carefully
+              const cmdParts = buildCmd.split(" ").filter(p => p.trim() !== "");
+              const buildCommand = cmdParts[0];
+              const buildArgs = cmdParts.slice(1);
+              
+              addRunLog({ level: "info", message: `Command: ${buildCommand}` });
+              addRunLog({ level: "info", message: `Arguments: [${buildArgs.join(', ')}]` });
               
               try {
-                addRunLog({ level: "info", message: `Executing: ${buildCommand} ${buildArgs.join(' ')}` });
+                addRunLog({ level: "info", message: "Invoking run_command..." });
                 const buildResult = await invoke<string>("run_command", { 
                   command: buildCommand,
                   args: buildArgs,
                   cwd: buildDirectory
                 });
-                addRunLog({ level: "success", message: buildResult || "Build completed successfully" });
-                addRunLog({ level: "info", message: "Build finished" });
+                addRunLog({ level: "success", message: "Build output:" });
+                addRunLog({ level: "success", message: buildResult || "(no output)" });
+                addRunLog({ level: "info", message: "=== BUILD NODE COMPLETE ===" });
                 
                 // Find build artifacts using custom pattern or auto-detect
                 const artifactPattern = node.config.artifactPattern;
@@ -1036,8 +1047,10 @@ export function WorkflowsTab() {
                   addRunLog({ level: "info", message: `Artifact locations: ${artifactPaths.join(", ")}` });
                 }
               } catch (e: any) {
-                const buildError = typeof e === 'string' ? e : JSON.stringify(e);
-                addRunLog({ level: "error", message: `Build failed: ${buildError}` });
+                addRunLog({ level: "error", message: "=== BUILD FAILED ===" });
+                const buildError = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+                addRunLog({ level: "error", message: `Error: ${buildError}` });
+                addRunLog({ level: "error", message: "Check that the build command is correct and dependencies are installed." });
                 throw new Error(`Build failed: ${buildError}`);
               }
               break;

@@ -178,44 +178,74 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     
     let path = Path::new(&path);
     
-    // Check for various build system files
+    // Check for various build system files in priority order
+    // Cargo (Rust)
     if path.join("Cargo.toml").exists() {
         return Ok("cargo".to_string());
     }
+    
+    // Go
     if path.join("go.mod").exists() {
         return Ok("go".to_string());
     }
+    
+    // Node.js package managers (check in order of specificity)
     if path.join("pnpm-lock.yaml").exists() {
         return Ok("pnpm".to_string());
     }
     if path.join("yarn.lock").exists() {
         return Ok("yarn".to_string());
     }
-    if path.join("package-lock.json").exists() || path.join("package.json").exists() {
+    if path.join("package-lock.json").exists() {
         return Ok("npm".to_string());
     }
+    if path.join("package.json").exists() {
+        // Check package.json for package manager hint
+        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+            if content.contains("\"packageManager\"") {
+                if content.contains("pnpm") {
+                    return Ok("pnpm".to_string());
+                } else if content.contains("yarn") {
+                    return Ok("yarn".to_string());
+                }
+            }
+        }
+        return Ok("npm".to_string());
+    }
+    
+    // Java
     if path.join("build.gradle").exists() || path.join("build.gradle.kts").exists() {
         return Ok("gradle".to_string());
     }
     if path.join("pom.xml").exists() {
         return Ok("maven".to_string());
     }
+    
+    // C/C++
     if path.join("CMakeLists.txt").exists() {
         return Ok("cmake".to_string());
     }
-    if path.join("Makefile").exists() {
+    if path.join("Makefile").exists() || path.join("makefile").exists() {
         return Ok("make".to_string());
     }
-    if path.join("pyproject.toml").exists() || path.join("setup.py").exists() {
+    
+    // Python
+    if path.join("pyproject.toml").exists() {
+        return Ok("python".to_string());
+    }
+    if path.join("setup.py").exists() {
+        return Ok("python".to_string());
+    }
+    if path.join("requirements.txt").exists() {
         return Ok("python".to_string());
     }
     
-    // Check for .csproj or .fsproj files
+    // .NET
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.ends_with(".csproj") || name_str.ends_with(".fsproj") {
+            if name_str.ends_with(".csproj") || name_str.ends_with(".fsproj") || name_str.ends_with(".sln") {
                 return Ok("dotnet".to_string());
             }
         }
