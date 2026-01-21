@@ -66,7 +66,7 @@ const OS_ASCII: Record<string, string[]> = {
 interface DockerContainer {
   id: string;
   name: string;
-  os: "windows" | "linux";
+  os: "windows" | "linux" | "macos";
   status: "running" | "stopped" | "creating";
   image: string;
 }
@@ -221,11 +221,18 @@ export function ServersTab() {
         .filter(line => line.trim())
         .map(line => {
           const [id, name, status, image] = line.split("|");
-          const isLinux = image?.includes("linux") || image?.includes("ubuntu") || image?.includes("debian") || image?.includes("alpine");
+          let os: "windows" | "linux" | "macos" = "linux";
+          
+          if (image?.includes("wine") || image?.includes("windows") || name?.includes("windows")) {
+            os = "windows";
+          } else if (image?.includes("macos") || image?.includes("osx") || name?.includes("macos")) {
+            os = "macos";
+          }
+          
           return {
             id,
             name,
-            os: isLinux ? "linux" as const : "windows" as const,
+            os,
             status: status?.toLowerCase().includes("up") ? "running" as const : "stopped" as const,
             image
           };
@@ -238,24 +245,43 @@ export function ServersTab() {
   };
 
   // Create a Docker container for cross-platform builds
-  const createDockerContainer = async (os: "windows" | "linux") => {
+  const createDockerContainer = async (os: "windows" | "linux" | "macos") => {
     setCreatingContainer(os);
-    
-    // Windows containers only work on Windows hosts
-    if (os === "windows") {
-      addLog("warn", "Windows containers require a Windows host.");
-      addLog("info", "BuildForge uses cross-compilation for Windows builds.");
-      addLog("info", "For Tauri apps: Install mingw-w64 for Windows cross-compilation");
-      addLog("info", "  macOS: brew install mingw-w64");
-      addLog("info", "  Linux: sudo apt install mingw-w64");
-      setCreatingContainer(null);
-      return;
-    }
-    
     addLog("info", `Creating ${os} Docker container for cross-platform builds...`);
     
     try {
-      const image = "ubuntu:22.04";
+      let image: string;
+      let setupCommands: string[];
+      
+      if (os === "windows") {
+        // Use Wine container for Windows builds
+        image = "tobix/pywine:3.9";
+        setupCommands = [
+          "apt-get update && apt-get install -y curl build-essential git",
+          "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+          "apt-get install -y nodejs",
+          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+          "rustup target add x86_64-pc-windows-gnu"
+        ];
+      } else if (os === "linux") {
+        image = "ubuntu:22.04";
+        setupCommands = [
+          "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl build-essential git libssl-dev pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf",
+          "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+          "apt-get install -y nodejs",
+          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        ];
+      } else {
+        // macOS - note: true macOS containers don't exist, but we can use OSXCross
+        addLog("warn", "macOS containers are experimental. Using OSXCross for cross-compilation.");
+        image = "ghcr.io/shepherdjerred/macos-cross-compiler:latest";
+        setupCommands = [
+          "apt-get update && apt-get install -y curl git",
+          "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+          "apt-get install -y nodejs"
+        ];
+      }
+      
       const containerName = `buildforge-${os}-builder`;
       
       // Pull the image first
@@ -281,7 +307,23 @@ export function ServersTab() {
         cwd: "/"
       });
       
-      addLog("success", `${os} Docker container created successfully!`);
+      addLog("success", `Container created! Installing build dependencies...`);
+      
+      // Install all build tools
+      for (const cmd of setupCommands) {
+        addLog("info", `Running: ${cmd.substring(0, 50)}...`);
+        try {
+          await invoke<string>("run_command", {
+            command: "docker",
+            args: ["exec", containerName, "bash", "-c", cmd],
+            cwd: "/"
+          });
+        } catch (e: any) {
+          addLog("warn", `Setup command failed (may be normal): ${e.toString().substring(0, 100)}`);
+        }
+      }
+      
+      addLog("success", `${os} Docker container ready for builds!`);
       loadDockerContainers();
     } catch (error: any) {
       addLog("error", `Failed to create ${os} container: ${error}`);
@@ -932,15 +974,44 @@ export function ServersTab() {
                           Add Linux Container
                         </button>
                       )}
+                      {!dockerContainers.find(c => c.os === "windows") && (
+                        <button
+                          onClick={() => createDockerContainer("windows")}
+                          disabled={creatingContainer !== null}
+                          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {creatingContainer === "windows" ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Plus className="w-4 h-4" />
+                          )}
+                          Add Windows Container
+                        </button>
+                      )}
+                      {!dockerContainers.find(c => c.os === "macos") && (
+                        <button
+                          onClick={() => createDockerContainer("macos")}
+                          disabled={creatingContainer !== null}
+                          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {creatingContainer === "macos" ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Plus className="w-4 h-4" />
+                          )}
+                          Add macOS Container
+                        </button>
+                      )}
                     </div>
                     <div className="p-3 bg-slate-800 rounded border border-slate-700">
                       <p className="text-xs text-slate-400 mb-2">
                         <strong className="text-slate-300">Cross-Platform Building:</strong>
                       </p>
                       <ul className="text-xs text-slate-500 space-y-1 ml-4 list-disc">
-                        <li>Linux builds: Use Docker container above</li>
-                        <li>Windows builds: Requires mingw-w64 (install: <code className="text-cyan-400">brew install mingw-w64</code>)</li>
-                        <li>macOS builds: Native on macOS, requires macOS host otherwise</li>
+                        <li>Linux: Docker container with full build environment</li>
+                        <li>Windows: Wine-based container with Windows build tools</li>
+                        <li>macOS: OSXCross container for macOS cross-compilation</li>
+                        <li>Auto-installs dependencies when needed</li>
                       </ul>
                     </div>
                   </div>

@@ -1082,12 +1082,82 @@ export function WorkflowsTab() {
                         cwd: "/"
                       });
                       
-                      // Run build in container
                       const workspaceName = cwd.split("/").pop();
+                      const workspaceInContainer = `/workspace/${workspaceName}`;
+                      
+                      // Auto-install dependencies based on detected build system
+                      addRunLog({ level: "info", message: "Checking and installing dependencies..." });
+                      
+                      // Check for package manager files and install dependencies
+                      const installCommands: string[] = [];
+                      
+                      // Node.js projects
+                      try {
+                        const pkgCheck = await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["exec", "-w", workspaceInContainer, containerName, "test", "-f", "package.json"],
+                          cwd: "/"
+                        });
+                        if (pkgCheck !== undefined) {
+                          installCommands.push("npm install || yarn install || pnpm install");
+                        }
+                      } catch {}
+                      
+                      // Rust projects
+                      try {
+                        const cargoCheck = await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["exec", "-w", workspaceInContainer, containerName, "test", "-f", "Cargo.toml"],
+                          cwd: "/"
+                        });
+                        if (cargoCheck !== undefined) {
+                          installCommands.push("source $HOME/.cargo/env || true");
+                        }
+                      } catch {}
+                      
+                      // Go projects
+                      try {
+                        const goCheck = await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["exec", "-w", workspaceInContainer, containerName, "test", "-f", "go.mod"],
+                          cwd: "/"
+                        });
+                        if (goCheck !== undefined) {
+                          installCommands.push("go mod download");
+                        }
+                      } catch {}
+                      
+                      // Python projects
+                      try {
+                        const pyCheck = await invoke<string>("run_command", {
+                          command: "docker",
+                          args: ["exec", "-w", workspaceInContainer, containerName, "test", "-f", "requirements.txt"],
+                          cwd: "/"
+                        });
+                        if (pyCheck !== undefined) {
+                          installCommands.push("pip install -r requirements.txt || pip3 install -r requirements.txt");
+                        }
+                      } catch {}
+                      
+                      // Run dependency installation
+                      for (const installCmd of installCommands) {
+                        try {
+                          addRunLog({ level: "info", message: `Installing: ${installCmd}` });
+                          await invoke<string>("run_command", {
+                            command: "docker",
+                            args: ["exec", "-w", workspaceInContainer, containerName, "bash", "-c", installCmd],
+                            cwd: "/"
+                          });
+                        } catch (e: any) {
+                          addRunLog({ level: "warn", message: `Install command failed (may be normal): ${e}` });
+                        }
+                      }
+                      
+                      // Run build in container
                       addRunLog({ level: "command", message: `docker exec ${containerName} ${cmd} ${args.join(" ")}` });
                       const dockerResult = await invoke<string>("run_command", {
                         command: "docker",
-                        args: ["exec", "-w", `/workspace/${workspaceName}`, containerName, cmd, ...args],
+                        args: ["exec", "-w", workspaceInContainer, containerName, "bash", "-c", `source $HOME/.cargo/env 2>/dev/null || true; ${cmd} ${args.join(" ")}`],
                         cwd: "/"
                       });
                       
@@ -1095,7 +1165,7 @@ export function WorkflowsTab() {
                       addRunLog({ level: "info", message: "Copying artifacts from container..." });
                       await invoke<string>("run_command", {
                         command: "docker",
-                        args: ["cp", `${containerName}:/workspace/${workspaceName}/.`, cwd],
+                        args: ["cp", `${containerName}:${workspaceInContainer}/.`, cwd],
                         cwd: "/"
                       });
                       
@@ -1206,24 +1276,131 @@ export function WorkflowsTab() {
                 
                 if (artifactPattern) {
                   // User specified artifact pattern
-                  artifactPaths = [`${buildDirectory}/${artifactPattern}`];
                   addRunLog({ level: "info", message: `Looking for artifacts matching: ${artifactPattern}` });
+                  try {
+                    const findResult = await invoke<string>("run_command", {
+                      command: "find",
+                      args: [buildDirectory, "-name", artifactPattern, "-type", "f"],
+                      cwd: buildDirectory
+                    });
+                    artifactPaths = findResult.split("\n").filter(p => p.trim());
+                  } catch {
+                    artifactPaths = [`${buildDirectory}/${artifactPattern}`];
+                  }
                 } else {
-                  // Auto-detect based on build system
+                  // Auto-detect based on build system and verify files exist
+                  addRunLog({ level: "info", message: "Auto-detecting build artifacts..." });
                   const detectedSystem = selectedRepo.detectedBuildSystem;
+                  const potentialPaths: string[] = [];
                   
-                  if (detectedSystem === "cargo") {
-                    artifactPaths = [`${buildDirectory}/target/release`];
-                  } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm") {
-                    artifactPaths = [`${buildDirectory}/dist`, `${buildDirectory}/build`, `${buildDirectory}/out`];
+                  // Define all possible artifact locations for each build system
+                  if (detectedSystem === "tauri") {
+                    potentialPaths.push(
+                      `${buildDirectory}/src-tauri/target/release`,
+                      `${buildDirectory}/src-tauri/target/debug`,
+                      `${buildDirectory}/src-tauri/target/*/release`,
+                      `${buildDirectory}/src-tauri/target/*/debug`,
+                      `${buildDirectory}/src-tauri/target/release/bundle`,
+                      `${buildDirectory}/src-tauri/target/debug/bundle`
+                    );
+                  } else if (detectedSystem === "cargo") {
+                    potentialPaths.push(
+                      `${buildDirectory}/target/release`,
+                      `${buildDirectory}/target/debug`,
+                      `${buildDirectory}/target/*/release`,
+                      `${buildDirectory}/target/*/debug`
+                    );
+                  } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm" || detectedSystem === "electron") {
+                    potentialPaths.push(
+                      `${buildDirectory}/dist`,
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/out`,
+                      `${buildDirectory}/output`,
+                      `${buildDirectory}/.next`,
+                      `${buildDirectory}/dist-electron`
+                    );
                   } else if (detectedSystem === "go") {
-                    artifactPaths = [buildDirectory];
-                  } else if (detectedSystem === "gradle" || detectedSystem === "maven") {
-                    artifactPaths = [`${buildDirectory}/build/libs`, `${buildDirectory}/target`];
+                    potentialPaths.push(
+                      `${buildDirectory}/bin`,
+                      `${buildDirectory}/build`,
+                      buildDirectory
+                    );
+                  } else if (detectedSystem === "gradle") {
+                    potentialPaths.push(
+                      `${buildDirectory}/build/libs`,
+                      `${buildDirectory}/build/outputs`,
+                      `${buildDirectory}/app/build/outputs`
+                    );
+                  } else if (detectedSystem === "maven") {
+                    potentialPaths.push(
+                      `${buildDirectory}/target`,
+                      `${buildDirectory}/target/release`
+                    );
                   } else if (detectedSystem === "cmake" || detectedSystem === "make") {
-                    artifactPaths = [`${buildDirectory}/build`, `${buildDirectory}/bin`];
+                    potentialPaths.push(
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/bin`,
+                      `${buildDirectory}/out`
+                    );
                   } else if (detectedSystem === "dotnet") {
-                    artifactPaths = [`${buildDirectory}/bin/Release`];
+                    potentialPaths.push(
+                      `${buildDirectory}/bin/Release`,
+                      `${buildDirectory}/bin/Debug`,
+                      `${buildDirectory}/publish`
+                    );
+                  } else if (detectedSystem === "python") {
+                    potentialPaths.push(
+                      `${buildDirectory}/dist`,
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/.eggs`
+                    );
+                  } else {
+                    // Unknown build system - search for common output patterns
+                    potentialPaths.push(
+                      `${buildDirectory}/dist`,
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/out`,
+                      `${buildDirectory}/bin`,
+                      `${buildDirectory}/target`
+                    );
+                  }
+                  
+                  // Check which paths actually exist and contain files
+                  for (const path of potentialPaths) {
+                    try {
+                      const checkResult = await invoke<string>("run_command", {
+                        command: "find",
+                        args: [path, "-type", "f", "-o", "-type", "d"],
+                        cwd: buildDirectory
+                      });
+                      if (checkResult && checkResult.trim()) {
+                        artifactPaths.push(path);
+                        addRunLog({ level: "success", message: `Found artifacts at: ${path}` });
+                        break; // Found artifacts, stop searching
+                      }
+                    } catch {
+                      // Path doesn't exist, continue
+                    }
+                  }
+                  
+                  // If still no artifacts found, try finding ANY executable or bundle
+                  if (artifactPaths.length === 0) {
+                    addRunLog({ level: "info", message: "Searching for executables and archives..." });
+                    try {
+                      const findExec = await invoke<string>("run_command", {
+                        command: "find",
+                        args: [buildDirectory, "-type", "f", "(", "-name", "*.exe", "-o", "-name", "*.app", "-o", "-name", "*.dmg", "-o", "-name", "*.deb", "-o", "-name", "*.rpm", "-o", "-name", "*.msi", "-o", "-name", "*.zip", "-o", "-name", "*.tar.gz", "-o", "-perm", "+111", ")"],
+                        cwd: buildDirectory
+                      });
+                      const foundFiles = findExec.split("\n").filter(p => p.trim() && !p.includes("/node_modules/") && !p.includes("/.git/"));
+                      if (foundFiles.length > 0) {
+                        artifactPaths = foundFiles;
+                        addRunLog({ level: "success", message: `Found ${foundFiles.length} artifact(s)` });
+                      }
+                    } catch {
+                      addRunLog({ level: "warn", message: "No artifacts found. Defaulting to build directory." });
+                      artifactPaths = [buildDirectory];
+                    }
                   }
                 }
                 
@@ -1231,6 +1408,8 @@ export function WorkflowsTab() {
                 if (artifactPaths.length > 0) {
                   updateNodeConfig(node.id, "artifactPaths", JSON.stringify(artifactPaths));
                   addRunLog({ level: "info", message: `Artifact locations: ${artifactPaths.join(", ")}` });
+                } else {
+                  addRunLog({ level: "warn", message: "No artifacts detected. Check build output." });
                 }
               } catch (e: any) {
                 addRunLog({ level: "error", message: "=== BUILD FAILED ===" });
