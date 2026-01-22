@@ -620,23 +620,59 @@ pub async fn exchange_oauth_code(code: String) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Result<String, String> {
-    use std::process::Command;
+    use std::process::Stdio;
+    use tokio::process::Command;
+    use tokio::io::{AsyncBufReadExt, BufReader};
     
-    // Simple approach: just run the command (Tauri handles timeouts at a higher level)
-    let output = Command::new(&command)
+    // Use tokio for async command execution - prevents blocking the UI
+    let mut child = Command::new(&command)
         .args(&args)
         .current_dir(&cwd)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to execute command: {}", e))?;
     
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    // Capture output asynchronously
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
     
-    if output.status.success() {
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+    
+    // Read stdout in background
+    let stdout_handle = tokio::spawn(async move {
+        let mut lines = Vec::new();
+        while let Ok(Some(line)) = stdout_reader.next_line().await {
+            lines.push(line);
+        }
+        lines
+    });
+    
+    // Read stderr in background
+    let stderr_handle = tokio::spawn(async move {
+        let mut lines = Vec::new();
+        while let Ok(Some(line)) = stderr_reader.next_line().await {
+            lines.push(line);
+        }
+        lines
+    });
+    
+    // Wait for process to complete
+    let status = child.wait().await
+        .map_err(|e| format!("Failed to wait for command: {}", e))?;
+    
+    // Collect output
+    let stdout_lines = stdout_handle.await.unwrap_or_default();
+    let stderr_lines = stderr_handle.await.unwrap_or_default();
+    
+    let stdout = stdout_lines.join("\n");
+    let stderr = stderr_lines.join("\n");
+    
+    if status.success() {
         Ok(format!("{}{}", stdout, stderr))
     } else {
-        // Include both stdout and stderr in error, and the exit code
-        let exit_code = output.status.code()
+        let exit_code = status.code()
             .map(|c: i32| c.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
