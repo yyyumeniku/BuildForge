@@ -1,0 +1,18 @@
+# BuildForge Linux Build Container (ARM64 compatible)
+# Ultra-minimal Alpine Linux (<150MB)
+FROM --platform=linux/arm64 node:20-alpine
+
+# Install Rust + minimal build tools
+RUN apk add --no-cache \
+        curl git build-base \
+        openssl-dev pkgconfig \
+        bash && \
+    # Install Rust with minimal profile
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && \
+    # Cleanup
+    rm -rf /var/cache/apk/* /tmp/* /root/.cargo/registry/cache
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /workspace
+CMD ["/bin/sh"]

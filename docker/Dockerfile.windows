@@ -1,0 +1,26 @@
+# BuildForge Windows Cross-Compile Container (ARM64 compatible)
+# Optimized for Apple Silicon with minimal size (<800MB)
+FROM --platform=linux/arm64 debian:bookworm-slim
+
+# Install minimal Wine + build tools in one layer
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wine wine32 wine64 \
+        curl ca-certificates git \
+        build-essential pkg-config libssl-dev \
+        mingw-w64 && \
+    # Install Node.js 20
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    # Install Rust with minimal profile
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target x86_64-pc-windows-gnu && \
+    # Cleanup
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
+
+WORKDIR /workspace
+CMD ["/bin/bash"]
