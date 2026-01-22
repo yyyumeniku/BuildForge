@@ -1122,23 +1122,31 @@ export function WorkflowsTab() {
               
             case "build":
               addRunLog({ level: "info", message: "=== BUILD NODE START ===" });
+              console.log('[BUILD NODE] Starting build node execution');
+              console.log('[BUILD NODE] Selected repo:', selectedRepo);
               
               // Force re-detect build system if not set or seems wrong
               if (!selectedRepo.detectedBuildSystem || selectedRepo.detectedBuildSystem === "npm" || selectedRepo.detectedBuildSystem === "unknown") {
                 addRunLog({ level: "info", message: "Re-detecting build system..." });
+                console.log('[BUILD NODE] Re-detecting build system for:', selectedRepo.path);
                 try {
                   const detectedSystem = await invoke<string>("detect_build_system", { path: selectedRepo.path });
+                  console.log('[BUILD NODE] Detected system:', detectedSystem);
                   addRunLog({ level: "success", message: `Build system detected: ${detectedSystem}` });
                   // Update the repo with correct build system
                   updateRepo(selectedRepo.id, { detectedBuildSystem: detectedSystem as BuildSystem });
                   selectedRepo.detectedBuildSystem = detectedSystem as BuildSystem;
                 } catch (detectError) {
+                  console.error('[BUILD NODE] Detection error:', detectError);
                   addRunLog({ level: "warn", message: `Could not re-detect build system: ${detectError}` });
                 }
               }
               
               const buildCmd = node.config.command || detectBuildCommand(selectedRepo);
               const targetOS = node.config.targetOS || "local";
+              
+              console.log('[BUILD NODE] Build command:', buildCmd);
+              console.log('[BUILD NODE] Target OS:', targetOS);
               
               // Debug logging
               addRunLog({ level: "info", message: `Repository path: ${selectedRepo.path}` });
@@ -1383,11 +1391,24 @@ export function WorkflowsTab() {
                 
                 // Run locally (current platform)
                 addRunLog({ level: "info", message: `Running build on current platform (${platform})...` });
-                return await invoke<string>("run_command", { 
-                  command: cmd,
-                  args: args,
-                  cwd: cwd
-                });
+                addRunLog({ level: "info", message: `Executing: ${cmd} ${args.join(' ')}` });
+                addRunLog({ level: "info", message: `Working directory: ${cwd}` });
+                
+                console.log('[BUILD NODE] Invoking run_command:', { cmd, args, cwd });
+                
+                try {
+                  const result = await invoke<string>("run_command", { 
+                    command: cmd,
+                    args: args,
+                    cwd: cwd
+                  });
+                  console.log('[BUILD NODE] Command succeeded, result length:', result?.length || 0);
+                  return result;
+                } catch (invokeError: any) {
+                  console.error('[BUILD NODE] Command failed:', invokeError);
+                  addRunLog({ level: "error", message: `Command failed: ${JSON.stringify(invokeError)}` });
+                  throw invokeError;
+                }
               };
               
               // Run build (handles routing)
@@ -1399,11 +1420,16 @@ export function WorkflowsTab() {
               const buildCommand = buildCmdParts[0];
               const buildArgs = buildCmdParts.slice(1);
               
+              console.log('[BUILD NODE] Parsed command:', buildCommand);
+              console.log('[BUILD NODE] Parsed args:', buildArgs);
+              
               addRunLog({ level: "info", message: `Command: ${buildCommand}` });
               addRunLog({ level: "info", message: `Arguments: [${buildArgs.join(', ')}]` });
               
               try {
                 addRunLog({ level: "info", message: "Invoking build..." });
+                addRunLog({ level: "info", message: "NOTE: Long builds (10-30 min) are normal for native apps" });
+                console.log('[BUILD NODE] About to invoke build command');
                 
                 // If targeting all platforms, build SEQUENTIALLY to prevent system overload
                 if (targetOS === "all") {
@@ -1450,7 +1476,9 @@ export function WorkflowsTab() {
                   }
                 } else {
                   addRunLog({ level: "info", message: `Building for ${targetOS}...` });
+                  console.log('[BUILD NODE] Calling runBuildOnPlatform with:', { targetOS, buildCommand, buildArgs, buildDirectory });
                   const buildResult = await runBuildOnPlatform(targetOS, buildCommand, buildArgs, buildDirectory);
+                  console.log('[BUILD NODE] Build result:', buildResult?.substring(0, 200));
                   addRunLog({ level: "success", message: "Build output:" });
                   addRunLog({ level: "success", message: buildResult || "(no output)" });
                 }
