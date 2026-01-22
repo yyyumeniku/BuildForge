@@ -137,20 +137,54 @@ const NODE_TYPES = [
 
 // Build system detection patterns
 const BUILD_SYSTEMS: { system: BuildSystem; files: string[]; buildCmd: string; testCmd: string }[] = [
+  // Desktop app frameworks
+  { system: "tauri", files: ["src-tauri/Cargo.toml", "tauri.conf.json"], buildCmd: "npm run tauri:build -- --debug", testCmd: "cargo test" },
   { system: "wails", files: ["wails.json"], buildCmd: "wails build", testCmd: "go test ./..." },
-  { system: "tauri", files: ["src-tauri/Cargo.toml"], buildCmd: "npm run tauri:build -- --debug", testCmd: "cargo test" },
   { system: "electron", files: ["package.json"], buildCmd: "npm run build", testCmd: "npm test" },
-  { system: "npm", files: ["package.json", "package-lock.json"], buildCmd: "npm run build", testCmd: "npm test" },
-  { system: "yarn", files: ["yarn.lock"], buildCmd: "yarn build", testCmd: "yarn test" },
-  { system: "pnpm", files: ["pnpm-lock.yaml"], buildCmd: "pnpm build", testCmd: "pnpm test" },
+  { system: "flutter", files: ["pubspec.yaml"], buildCmd: "flutter build", testCmd: "flutter test" },
+  { system: "react-native", files: ["app.json", "package.json"], buildCmd: "npx react-native build-android && npx react-native build-ios", testCmd: "npm test" },
+  
+  // Native languages
   { system: "cargo", files: ["Cargo.toml"], buildCmd: "cargo build --release", testCmd: "cargo test" },
-  { system: "go", files: ["go.mod"], buildCmd: "go build ./...", testCmd: "go test ./..." },
-  { system: "gradle", files: ["build.gradle", "build.gradle.kts"], buildCmd: "./gradlew build", testCmd: "./gradlew test" },
+  { system: "go", files: ["go.mod", "go.sum"], buildCmd: "go build ./...", testCmd: "go test ./..." },
+  { system: "swift", files: ["Package.swift"], buildCmd: "swift build", testCmd: "swift test" },
+  { system: "xcode", files: ["*.xcodeproj"], buildCmd: "xcodebuild", testCmd: "xcodebuild test" },
+  
+  // Web frameworks
+  { system: "nextjs", files: ["next.config.js", "next.config.mjs", "next.config.ts"], buildCmd: "npm run build", testCmd: "npm test" },
+  { system: "vite", files: ["vite.config.js", "vite.config.ts"], buildCmd: "npm run build", testCmd: "npm test" },
+  
+  // Package managers
+  { system: "pnpm", files: ["pnpm-lock.yaml", "pnpm-workspace.yaml"], buildCmd: "pnpm build", testCmd: "pnpm test" },
+  { system: "yarn", files: ["yarn.lock"], buildCmd: "yarn build", testCmd: "yarn test" },
+  { system: "bun", files: ["bun.lockb"], buildCmd: "bun run build", testCmd: "bun test" },
+  { system: "npm", files: ["package.json", "package-lock.json"], buildCmd: "npm run build", testCmd: "npm test" },
+  
+  // JVM languages
+  { system: "gradle", files: ["build.gradle", "build.gradle.kts", "settings.gradle"], buildCmd: "./gradlew build", testCmd: "./gradlew test" },
   { system: "maven", files: ["pom.xml"], buildCmd: "mvn package", testCmd: "mvn test" },
-  { system: "cmake", files: ["CMakeLists.txt"], buildCmd: "cmake --build .", testCmd: "ctest" },
-  { system: "make", files: ["Makefile"], buildCmd: "make", testCmd: "make test" },
-  { system: "python", files: ["setup.py", "pyproject.toml"], buildCmd: "pip install -e .", testCmd: "pytest" },
-  { system: "dotnet", files: ["*.csproj", "*.fsproj"], buildCmd: "dotnet build", testCmd: "dotnet test" },
+  { system: "sbt", files: ["build.sbt"], buildCmd: "sbt compile", testCmd: "sbt test" },
+  
+  // C/C++ build systems
+  { system: "cmake", files: ["CMakeLists.txt"], buildCmd: "cmake --build . --config Release", testCmd: "ctest" },
+  { system: "meson", files: ["meson.build"], buildCmd: "meson compile -C builddir", testCmd: "meson test -C builddir" },
+  { system: "make", files: ["Makefile", "makefile"], buildCmd: "make", testCmd: "make test" },
+  { system: "bazel", files: ["BUILD", "BUILD.bazel", "WORKSPACE"], buildCmd: "bazel build //...", testCmd: "bazel test //..." },
+  
+  // Python
+  { system: "poetry", files: ["poetry.lock"], buildCmd: "poetry build", testCmd: "poetry run pytest" },
+  { system: "pipenv", files: ["Pipfile"], buildCmd: "pipenv install", testCmd: "pipenv run pytest" },
+  { system: "python", files: ["setup.py", "pyproject.toml", "requirements.txt"], buildCmd: "python -m build", testCmd: "pytest" },
+  
+  // .NET
+  { system: "dotnet", files: ["*.csproj", "*.fsproj", "*.sln"], buildCmd: "dotnet build --configuration Release", testCmd: "dotnet test" },
+  
+  // Other languages
+  { system: "ruby", files: ["Gemfile"], buildCmd: "bundle install", testCmd: "bundle exec rspec" },
+  { system: "php", files: ["composer.json"], buildCmd: "composer install", testCmd: "composer test" },
+  { system: "elixir", files: ["mix.exs"], buildCmd: "mix compile", testCmd: "mix test" },
+  { system: "zig", files: ["build.zig"], buildCmd: "zig build", testCmd: "zig build test" },
+  { system: "nim", files: ["*.nimble"], buildCmd: "nimble build", testCmd: "nimble test" },
 ];
 
 interface Position { x: number; y: number; }
@@ -1386,7 +1420,7 @@ export function WorkflowsTab() {
                   
                   // Define all possible artifact locations for each build system
                   if (detectedSystem === "tauri") {
-                    // Prioritize bundle directories first (contains .dmg, .app, .msi, .deb, etc.)
+                    // Tauri: Prioritize bundle directories (contains .dmg, .app, .msi, .deb, etc.)
                     potentialPaths.push(
                       `${buildDirectory}/src-tauri/target/release/bundle`,
                       `${buildDirectory}/src-tauri/target/debug/bundle`,
@@ -1400,69 +1434,176 @@ export function WorkflowsTab() {
                       `${buildDirectory}/src-tauri/target/release`,
                       `${buildDirectory}/src-tauri/target/debug`
                     );
+                  } else if (detectedSystem === "wails") {
+                    // Wails: build/bin directory
+                    potentialPaths.push(
+                      `${buildDirectory}/build/bin`,
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/bin`
+                    );
+                  } else if (detectedSystem === "electron") {
+                    // Electron: dist or out directory
+                    potentialPaths.push(
+                      `${buildDirectory}/dist-electron`,
+                      `${buildDirectory}/dist`,
+                      `${buildDirectory}/out`,
+                      `${buildDirectory}/release`
+                    );
+                  } else if (detectedSystem === "flutter") {
+                    // Flutter: build outputs for each platform
+                    potentialPaths.push(
+                      `${buildDirectory}/build/macos/Build/Products/Release`,
+                      `${buildDirectory}/build/linux/x64/release/bundle`,
+                      `${buildDirectory}/build/windows/runner/Release`,
+                      `${buildDirectory}/build/app/outputs/flutter-apk`,
+                      `${buildDirectory}/build/ios/Release-iphoneos`
+                    );
+                  } else if (detectedSystem === "react-native") {
+                    // React Native: android and ios builds
+                    potentialPaths.push(
+                      `${buildDirectory}/android/app/build/outputs/apk`,
+                      `${buildDirectory}/android/app/build/outputs/bundle`,
+                      `${buildDirectory}/ios/build/Build/Products`
+                    );
+                  } else if (detectedSystem === "xcode" || detectedSystem === "swift") {
+                    // Xcode/Swift: DerivedData or build folder
+                    potentialPaths.push(
+                      `${buildDirectory}/build/Release`,
+                      `${buildDirectory}/build/Debug`,
+                      `${buildDirectory}/.build/release`,
+                      `${buildDirectory}/.build/debug`
+                    );
                   } else if (detectedSystem === "cargo") {
+                    // Rust (Cargo)
                     potentialPaths.push(
                       `${buildDirectory}/target/release`,
                       `${buildDirectory}/target/debug`,
                       `${buildDirectory}/target/*/release`,
                       `${buildDirectory}/target/*/debug`
                     );
-                  } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm" || detectedSystem === "electron") {
-                    // Check if it's actually a Tauri app with npm wrapper
-                    potentialPaths.push(
-                      `${buildDirectory}/src-tauri/target/release/bundle`,
-                      `${buildDirectory}/src-tauri/target/debug/bundle`,
-                      `${buildDirectory}/dist-electron`,
-                      `${buildDirectory}/out`,
-                      `${buildDirectory}/dist`,
-                      `${buildDirectory}/build`,
-                      `${buildDirectory}/output`,
-                      `${buildDirectory}/.next`,
-                      `${buildDirectory}/dist-electron`
-                    );
                   } else if (detectedSystem === "go") {
+                    // Go: bin directory or root
                     potentialPaths.push(
                       `${buildDirectory}/bin`,
                       `${buildDirectory}/build`,
                       buildDirectory
                     );
                   } else if (detectedSystem === "gradle") {
+                    // Gradle: build/libs or build/outputs
                     potentialPaths.push(
                       `${buildDirectory}/build/libs`,
                       `${buildDirectory}/build/outputs`,
-                      `${buildDirectory}/app/build/outputs`
+                      `${buildDirectory}/app/build/outputs/apk`,
+                      `${buildDirectory}/app/build/outputs/bundle`,
+                      `${buildDirectory}/build/distributions`
                     );
                   } else if (detectedSystem === "maven") {
+                    // Maven: target directory
                     potentialPaths.push(
                       `${buildDirectory}/target`,
                       `${buildDirectory}/target/release`
                     );
-                  } else if (detectedSystem === "cmake" || detectedSystem === "make") {
+                  } else if (detectedSystem === "sbt") {
+                    // Scala (SBT)
+                    potentialPaths.push(
+                      `${buildDirectory}/target/scala-*/`,
+                      `${buildDirectory}/target/universal`
+                    );
+                  } else if (detectedSystem === "cmake") {
+                    // CMake
+                    potentialPaths.push(
+                      `${buildDirectory}/build/Release`,
+                      `${buildDirectory}/build/Debug`,
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/bin`
+                    );
+                  } else if (detectedSystem === "meson") {
+                    // Meson
+                    potentialPaths.push(
+                      `${buildDirectory}/builddir`,
+                      `${buildDirectory}/build`
+                    );
+                  } else if (detectedSystem === "make") {
+                    // Make
                     potentialPaths.push(
                       `${buildDirectory}/build`,
                       `${buildDirectory}/bin`,
-                      `${buildDirectory}/out`
+                      `${buildDirectory}/out`,
+                      buildDirectory
+                    );
+                  } else if (detectedSystem === "bazel") {
+                    // Bazel
+                    potentialPaths.push(
+                      `${buildDirectory}/bazel-bin`,
+                      `${buildDirectory}/bazel-out`
                     );
                   } else if (detectedSystem === "dotnet") {
+                    // .NET
                     potentialPaths.push(
                       `${buildDirectory}/bin/Release`,
                       `${buildDirectory}/bin/Debug`,
-                      `${buildDirectory}/publish`
+                      `${buildDirectory}/publish`,
+                      `${buildDirectory}/artifacts`
                     );
-                  } else if (detectedSystem === "python") {
+                  } else if (detectedSystem === "python" || detectedSystem === "poetry" || detectedSystem === "pipenv") {
+                    // Python
                     potentialPaths.push(
                       `${buildDirectory}/dist`,
                       `${buildDirectory}/build`,
-                      `${buildDirectory}/.eggs`
+                      `${buildDirectory}/.eggs`,
+                      `${buildDirectory}/wheels`
+                    );
+                  } else if (detectedSystem === "ruby") {
+                    // Ruby
+                    potentialPaths.push(
+                      `${buildDirectory}/pkg`,
+                      `${buildDirectory}/vendor/bundle`
+                    );
+                  } else if (detectedSystem === "php") {
+                    // PHP
+                    potentialPaths.push(
+                      `${buildDirectory}/vendor`,
+                      `${buildDirectory}/build`
+                    );
+                  } else if (detectedSystem === "elixir") {
+                    // Elixir
+                    potentialPaths.push(
+                      `${buildDirectory}/_build/prod`,
+                      `${buildDirectory}/_build/dev`
+                    );
+                  } else if (detectedSystem === "zig") {
+                    // Zig
+                    potentialPaths.push(
+                      `${buildDirectory}/zig-out/bin`,
+                      `${buildDirectory}/zig-out`
+                    );
+                  } else if (detectedSystem === "nim") {
+                    // Nim
+                    potentialPaths.push(
+                      `${buildDirectory}/bin`,
+                      buildDirectory
+                    );
+                  } else if (detectedSystem === "nextjs" || detectedSystem === "vite" || detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm" || detectedSystem === "bun") {
+                    // Node.js web frameworks: Check if it's actually a Tauri/Electron app first
+                    potentialPaths.push(
+                      `${buildDirectory}/src-tauri/target/release/bundle`,
+                      `${buildDirectory}/src-tauri/target/debug/bundle`,
+                      `${buildDirectory}/dist-electron`,
+                      `${buildDirectory}/.next/standalone`,
+                      `${buildDirectory}/out`,
+                      `${buildDirectory}/dist`,
+                      `${buildDirectory}/build`,
+                      `${buildDirectory}/output`
                     );
                   } else {
-                    // Unknown build system - search for common output patterns
+                    // Unknown build system - search common output directories
                     potentialPaths.push(
                       `${buildDirectory}/dist`,
                       `${buildDirectory}/build`,
                       `${buildDirectory}/out`,
                       `${buildDirectory}/bin`,
-                      `${buildDirectory}/target`
+                      `${buildDirectory}/target`,
+                      `${buildDirectory}/release`
                     );
                   }
                   

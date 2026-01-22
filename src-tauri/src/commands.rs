@@ -178,26 +178,61 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     
     let path = Path::new(&path);
     
-    // Check for Tauri FIRST (before npm/node checks)
+    // ============================================
+    // DESKTOP APP FRAMEWORKS (Priority 1)
+    // ============================================
+    
+    // Tauri (Rust + Web) - check FIRST before npm
     if path.join("src-tauri").is_dir() && path.join("src-tauri/Cargo.toml").exists() {
         return Ok("tauri".to_string());
     }
+    if path.join("tauri.conf.json").exists() || path.join("src-tauri/tauri.conf.json").exists() {
+        return Ok("tauri".to_string());
+    }
     
-    // Check for Wails (Go + frontend framework)
-    if path.join("wails.json").exists() || (path.join("go.mod").exists() && path.join("frontend").is_dir()) {
+    // Wails (Go + Web)
+    if path.join("wails.json").exists() {
+        return Ok("wails".to_string());
+    }
+    if path.join("go.mod").exists() && (path.join("frontend").is_dir() || path.join("wails.json").exists()) {
         return Ok("wails".to_string());
     }
     
-    // Check for Electron (Node.js based)
+    // Electron (Node.js + Web)
     if path.join("package.json").exists() {
         if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-            if content.contains("\"electron\"") {
+            if content.contains("\"electron\"") || content.contains("electron-builder") || content.contains("@electron") {
                 return Ok("electron".to_string());
             }
         }
     }
     
-    // Cargo (Rust)
+    // Flutter (Dart + Native)
+    if path.join("pubspec.yaml").exists() {
+        if let Ok(content) = std::fs::read_to_string(path.join("pubspec.yaml")) {
+            if content.contains("flutter:") {
+                return Ok("flutter".to_string());
+            }
+        }
+    }
+    
+    // React Native / Expo
+    if path.join("package.json").exists() {
+        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+            if content.contains("react-native") || content.contains("\"expo\"") {
+                return Ok("react-native".to_string());
+            }
+        }
+    }
+    if path.join("app.json").exists() && path.join("package.json").exists() {
+        return Ok("react-native".to_string());
+    }
+    
+    // ============================================
+    // NATIVE LANGUAGES (Priority 2)
+    // ============================================
+    
+    // Rust (Cargo)
     if path.join("Cargo.toml").exists() {
         return Ok("cargo".to_string());
     }
@@ -206,48 +241,122 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     if path.join("go.mod").exists() {
         return Ok("go".to_string());
     }
+    if path.join("go.sum").exists() {
+        return Ok("go".to_string());
+    }
+    
+    // Swift (iOS/macOS)
+    if path.join("Package.swift").exists() {
+        return Ok("swift".to_string());
+    }
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".xcodeproj") || name_str.ends_with(".xcworkspace") {
+                return Ok("xcode".to_string());
+            }
+        }
+    }
+    
+    // ============================================
+    // WEB FRAMEWORKS (Priority 3)
+    // ============================================
+    
+    // Next.js
+    if path.join("next.config.js").exists() || path.join("next.config.mjs").exists() || path.join("next.config.ts").exists() {
+        return Ok("nextjs".to_string());
+    }
+    
+    // Vite
+    if path.join("vite.config.js").exists() || path.join("vite.config.ts").exists() {
+        return Ok("vite".to_string());
+    }
+    
+    // ============================================
+    // PACKAGE MANAGERS (Priority 4)
+    // ============================================
     
     // Node.js package managers (check in order of specificity)
-    if path.join("pnpm-lock.yaml").exists() {
+    if path.join("pnpm-lock.yaml").exists() || path.join("pnpm-workspace.yaml").exists() {
         return Ok("pnpm".to_string());
     }
     if path.join("yarn.lock").exists() {
         return Ok("yarn".to_string());
     }
+    if path.join("bun.lockb").exists() {
+        return Ok("bun".to_string());
+    }
     if path.join("package-lock.json").exists() {
         return Ok("npm".to_string());
     }
     if path.join("package.json").exists() {
-        // Check package.json for package manager hint
+        // Check package.json for package manager hint or scripts
         if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
             if content.contains("\"packageManager\"") {
                 if content.contains("pnpm") {
                     return Ok("pnpm".to_string());
                 } else if content.contains("yarn") {
                     return Ok("yarn".to_string());
+                } else if content.contains("bun") {
+                    return Ok("bun".to_string());
                 }
             }
         }
         return Ok("npm".to_string());
     }
     
-    // Java
+    // ============================================
+    // JVM LANGUAGES (Priority 5)
+    // ============================================
+    
+    // Gradle (Java/Kotlin/Android)
     if path.join("build.gradle").exists() || path.join("build.gradle.kts").exists() {
         return Ok("gradle".to_string());
     }
+    if path.join("settings.gradle").exists() || path.join("settings.gradle.kts").exists() {
+        return Ok("gradle".to_string());
+    }
+    
+    // Maven (Java)
     if path.join("pom.xml").exists() {
         return Ok("maven".to_string());
     }
     
-    // C/C++
+    // ============================================
+    // C/C++ BUILD SYSTEMS (Priority 6)
+    // ============================================
+    
+    // CMake
     if path.join("CMakeLists.txt").exists() {
         return Ok("cmake".to_string());
     }
+    
+    // Meson
+    if path.join("meson.build").exists() {
+        return Ok("meson".to_string());
+    }
+    
+    // Makefile
     if path.join("Makefile").exists() || path.join("makefile").exists() {
         return Ok("make".to_string());
     }
     
-    // Python
+    // Bazel
+    if path.join("BUILD").exists() || path.join("BUILD.bazel").exists() || path.join("WORKSPACE").exists() {
+        return Ok("bazel".to_string());
+    }
+    
+    // ============================================
+    // PYTHON (Priority 7)
+    // ============================================
+    
+    // Poetry
+    if path.join("poetry.lock").exists() {
+        return Ok("poetry".to_string());
+    }
+    
+    // Python projects
     if path.join("pyproject.toml").exists() {
         return Ok("python".to_string());
     }
@@ -257,14 +366,60 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     if path.join("requirements.txt").exists() {
         return Ok("python".to_string());
     }
+    if path.join("Pipfile").exists() {
+        return Ok("pipenv".to_string());
+    }
     
-    // .NET
+    // ============================================
+    // .NET (Priority 8)
+    // ============================================
+    
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if name_str.ends_with(".csproj") || name_str.ends_with(".fsproj") || name_str.ends_with(".sln") {
                 return Ok("dotnet".to_string());
+            }
+        }
+    }
+    
+    // ============================================
+    // OTHER LANGUAGES (Priority 9)
+    // ============================================
+    
+    // Ruby
+    if path.join("Gemfile").exists() {
+        return Ok("ruby".to_string());
+    }
+    
+    // PHP
+    if path.join("composer.json").exists() {
+        return Ok("php".to_string());
+    }
+    
+    // Elixir
+    if path.join("mix.exs").exists() {
+        return Ok("elixir".to_string());
+    }
+    
+    // Scala (SBT)
+    if path.join("build.sbt").exists() {
+        return Ok("sbt".to_string());
+    }
+    
+    // Zig
+    if path.join("build.zig").exists() {
+        return Ok("zig".to_string());
+    }
+    
+    // Nim
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.ends_with(".nimble") {
+                return Ok("nim".to_string());
             }
         }
     }

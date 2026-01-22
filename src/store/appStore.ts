@@ -102,7 +102,7 @@ export interface LocalRepo {
   detectedBuildSystem: BuildSystem | null;
 }
 
-export type BuildSystem = "wails" | "tauri" | "electron" | "npm" | "yarn" | "pnpm" | "cargo" | "go" | "gradle" | "maven" | "cmake" | "make" | "python" | "dotnet" | "unknown";
+export type BuildSystem = "wails" | "tauri" | "electron" | "flutter" | "react-native" | "npm" | "yarn" | "pnpm" | "bun" | "cargo" | "go" | "swift" | "xcode" | "nextjs" | "vite" | "gradle" | "maven" | "cmake" | "meson" | "make" | "bazel" | "poetry" | "python" | "pipenv" | "dotnet" | "ruby" | "php" | "elixir" | "sbt" | "zig" | "nim" | "unknown";
 
 // Workflow types for persistence
 export interface WorkflowNode {
