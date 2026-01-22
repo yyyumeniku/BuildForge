@@ -1903,23 +1903,29 @@ export function WorkflowsTab() {
                     const { readBinaryFile } = await import("@tauri-apps/api/fs");
                     const fileContent = await readBinaryFile(artifactPath);
                     
-                    // Upload to GitHub release - create new Uint8Array for fetch body
+                    // Upload to GitHub release using Tauri HTTP client to avoid CORS
                     const uploadUrl = release.upload_url.replace("{?name,label}", `?name=${encodeURIComponent(fileName)}`);
-                    const uploadResponse = await fetch(uploadUrl, {
+                    
+                    // Use Tauri's HTTP client for uploads (bypasses CORS)
+                    const { getClient, Body } = await import("@tauri-apps/api/http");
+                    const httpClient = await getClient();
+                    
+                    const uploadResponse = await httpClient.request({
                       method: "POST",
+                      url: uploadUrl,
                       headers: {
-                        Authorization: `Bearer ${accessToken}`,
+                        "Authorization": `Bearer ${accessToken}`,
                         "Content-Type": "application/octet-stream",
+                        "Accept": "application/vnd.github.v3+json",
                       },
-                      body: new Uint8Array(fileContent),
+                      body: Body.bytes(fileContent),
                     });
                     
                     if (uploadResponse.ok) {
                       addRunLog({ level: "success", message: `✓ Uploaded: ${fileName}` });
                       uploadedCount++;
                     } else {
-                      const error = await uploadResponse.text();
-                      addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${error}` });
+                      addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${JSON.stringify(uploadResponse.data)}` });
                     }
                   } catch (uploadError: any) {
                     addRunLog({ level: "warn", message: `Upload error: ${uploadError.message || uploadError}` });

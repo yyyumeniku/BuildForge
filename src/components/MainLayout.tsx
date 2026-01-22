@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Workflow, Server, Settings, Package, LogOut } from "lucide-react";
+import { Workflow, Server, Settings, Package, LogOut, Store } from "lucide-react";
 import { useAppStore } from "../store/appStore";
 import { Titlebar } from "./Titlebar";
 
@@ -8,8 +8,9 @@ import { WorkflowsTab } from "./tabs/WorkflowsTab";
 import { ServersTab } from "./tabs/ServersTab";
 import { ReleasesTab } from "./tabs/ReleasesTab";
 import { SettingsTab } from "./tabs/SettingsTab";
+import { MarketplaceTab } from "./tabs/MarketplaceTab";
 
-type TabId = "workflows" | "servers" | "releases" | "settings";
+type TabId = "workflows" | "servers" | "releases" | "marketplace" | "settings";
 
 interface Tab {
   id: TabId;
@@ -21,6 +22,7 @@ const tabs: Tab[] = [
   { id: "workflows", label: "Workflows", icon: <Workflow className="w-5 h-5" /> },
   { id: "servers", label: "Servers", icon: <Server className="w-5 h-5" /> },
   { id: "releases", label: "Repositories", icon: <Package className="w-5 h-5" /> },
+  { id: "marketplace", label: "Marketplace", icon: <Store className="w-5 h-5" /> },
   { id: "settings", label: "Settings", icon: <Settings className="w-5 h-5" /> },
 ];
 
@@ -36,6 +38,8 @@ export function MainLayout() {
         return <ServersTab />;
       case "releases":
         return <ReleasesTab />;
+      case "marketplace":
+        return <MarketplaceTab />;
       case "settings":
         return <SettingsTab />;
       default:

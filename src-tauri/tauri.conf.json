@@ -32,6 +32,10 @@
       "window": {
         "all": true
       },
+      "http": {
+        "all": true,
+        "scope": ["https://*", "http://*"]
+      },
       "protocol": {
         "asset": true,
         "assetScope": ["$HOME/**"]
