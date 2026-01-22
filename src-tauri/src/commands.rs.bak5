@@ -176,56 +176,93 @@ pub async fn get_git_remote(path: String) -> Result<String, String> {
 pub async fn detect_build_system(path: String) -> Result<String, String> {
     use std::path::Path;
     
-    eprintln!("[detect_build_system] Checking: {}", path);
-    let path = Path::new(&path);
+    eprintln!("[detect_build_system] START: {}", path);
+    
+    // Validate input
+    if path.is_empty() {
+        eprintln!("[detect_build_system] ERROR: Empty path");
+        return Err("Path cannot be empty".to_string());
+    }
+    
+    let path_obj = Path::new(&path);
+    
+    if !path_obj.exists() {
+        eprintln!("[detect_build_system] ERROR: Path does not exist: {}", path);
+        return Err(format!("Path does not exist: {}", path));
+    }
+    
+    eprintln!("[detect_build_system] Path exists, checking build systems...");
     
     // ============================================
     // DESKTOP APP FRAMEWORKS (Priority 1)
     // ============================================
     
     // Tauri (Rust + Web) - check FIRST before npm
-    if path.join("src-tauri").is_dir() && path.join("src-tauri/Cargo.toml").exists() {
+    if path_obj.join("src-tauri").is_dir() && path_obj.join("src-tauri/Cargo.toml").exists() {
+        eprintln!("[detect_build_system] Detected: tauri");
         return Ok("tauri".to_string());
     }
-    if path.join("tauri.conf.json").exists() || path.join("src-tauri/tauri.conf.json").exists() {
+    if path_obj.join("tauri.conf.json").exists() || path_obj.join("src-tauri/tauri.conf.json").exists() {
+        eprintln!("[detect_build_system] Detected: tauri (via config)");
         return Ok("tauri".to_string());
     }
     
     // Wails (Go + Web)
-    if path.join("wails.json").exists() {
+    if path_obj.join("wails.json").exists() {
+        eprintln!("[detect_build_system] Detected: wails");
         return Ok("wails".to_string());
     }
-    if path.join("go.mod").exists() && (path.join("frontend").is_dir() || path.join("wails.json").exists()) {
+    if path_obj.join("go.mod").exists() && (path_obj.join("frontend").is_dir() || path_obj.join("wails.json").exists()) {
+        eprintln!("[detect_build_system] Detected: wails (via go.mod)");
         return Ok("wails".to_string());
     }
     
     // Electron (Node.js + Web)
-    if path.join("package.json").exists() {
-        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-            if content.contains("\"electron\"") || content.contains("electron-builder") || content.contains("@electron") {
-                return Ok("electron".to_string());
+    if path_obj.join("package.json").exists() {
+        match std::fs::read_to_string(path_obj.join("package.json")) {
+            Ok(content) => {
+                if content.contains("\"electron\"") || content.contains("electron-builder") || content.contains("@electron") {
+                    eprintln!("[detect_build_system] Detected: electron");
+                    return Ok("electron".to_string());
+                }
+            }
+            Err(e) => {
+                eprintln!("[detect_build_system] Warning: Could not read package.json: {}", e);
             }
         }
     }
     
     // Flutter (Dart + Native)
-    if path.join("pubspec.yaml").exists() {
-        if let Ok(content) = std::fs::read_to_string(path.join("pubspec.yaml")) {
-            if content.contains("flutter:") {
-                return Ok("flutter".to_string());
+    if path_obj.join("pubspec.yaml").exists() {
+        match std::fs::read_to_string(path_obj.join("pubspec.yaml")) {
+            Ok(content) => {
+                if content.contains("flutter:") {
+                    eprintln!("[detect_build_system] Detected: flutter");
+                    return Ok("flutter".to_string());
+                }
+            }
+            Err(e) => {
+                eprintln!("[detect_build_system] Warning: Could not read pubspec.yaml: {}", e);
             }
         }
     }
     
     // React Native / Expo
-    if path.join("package.json").exists() {
-        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-            if content.contains("react-native") || content.contains("\"expo\"") {
-                return Ok("react-native".to_string());
+    if path_obj.join("package.json").exists() {
+        match std::fs::read_to_string(path_obj.join("package.json")) {
+            Ok(content) => {
+                if content.contains("react-native") || content.contains("\"expo\"") {
+                    eprintln!("[detect_build_system] Detected: react-native");
+                    return Ok("react-native".to_string());
+                }
+            }
+            Err(e) => {
+                eprintln!("[detect_build_system] Warning: Could not read package.json for react-native: {}", e);
             }
         }
     }
-    if path.join("app.json").exists() && path.join("package.json").exists() {
+    if path_obj.join("app.json").exists() && path_obj.join("package.json").exists() {
+        eprintln!("[detect_build_system] Detected: react-native (via app.json)");
         return Ok("react-native".to_string());
     }
     
@@ -234,23 +271,23 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // Rust (Cargo)
-    if path.join("Cargo.toml").exists() {
+    if path_obj.join("Cargo.toml").exists() {
         return Ok("cargo".to_string());
     }
     
     // Go
-    if path.join("go.mod").exists() {
+    if path_obj.join("go.mod").exists() {
         return Ok("go".to_string());
     }
-    if path.join("go.sum").exists() {
+    if path_obj.join("go.sum").exists() {
         return Ok("go".to_string());
     }
     
     // Swift (iOS/macOS)
-    if path.join("Package.swift").exists() {
+    if path_obj.join("Package.swift").exists() {
         return Ok("swift".to_string());
     }
-    if let Ok(entries) = std::fs::read_dir(path) {
+    if let Ok(entries) = std::fs::read_dir(path_obj) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -265,12 +302,12 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // Next.js
-    if path.join("next.config.js").exists() || path.join("next.config.mjs").exists() || path.join("next.config.ts").exists() {
+    if path_obj.join("next.config.js").exists() || path_obj.join("next.config.mjs").exists() || path_obj.join("next.config.ts").exists() {
         return Ok("nextjs".to_string());
     }
     
     // Vite
-    if path.join("vite.config.js").exists() || path.join("vite.config.ts").exists() {
+    if path_obj.join("vite.config.js").exists() || path_obj.join("vite.config.ts").exists() {
         return Ok("vite".to_string());
     }
     
@@ -279,21 +316,21 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // Node.js package managers (check in order of specificity)
-    if path.join("pnpm-lock.yaml").exists() || path.join("pnpm-workspace.yaml").exists() {
+    if path_obj.join("pnpm-lock.yaml").exists() || path_obj.join("pnpm-workspace.yaml").exists() {
         return Ok("pnpm".to_string());
     }
-    if path.join("yarn.lock").exists() {
+    if path_obj.join("yarn.lock").exists() {
         return Ok("yarn".to_string());
     }
-    if path.join("bun.lockb").exists() {
+    if path_obj.join("bun.lockb").exists() {
         return Ok("bun".to_string());
     }
-    if path.join("package-lock.json").exists() {
+    if path_obj.join("package-lock.json").exists() {
         return Ok("npm".to_string());
     }
-    if path.join("package.json").exists() {
+    if path_obj.join("package.json").exists() {
         // Check package.json for package manager hint or scripts
-        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+        if let Ok(content) = std::fs::read_to_string(path_obj.join("package.json")) {
             if content.contains("\"packageManager\"") {
                 if content.contains("pnpm") {
                     return Ok("pnpm".to_string());
@@ -312,15 +349,15 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // Gradle (Java/Kotlin/Android)
-    if path.join("build.gradle").exists() || path.join("build.gradle.kts").exists() {
+    if path_obj.join("build.gradle").exists() || path_obj.join("build.gradle.kts").exists() {
         return Ok("gradle".to_string());
     }
-    if path.join("settings.gradle").exists() || path.join("settings.gradle.kts").exists() {
+    if path_obj.join("settings.gradle").exists() || path_obj.join("settings.gradle.kts").exists() {
         return Ok("gradle".to_string());
     }
     
     // Maven (Java)
-    if path.join("pom.xml").exists() {
+    if path_obj.join("pom.xml").exists() {
         return Ok("maven".to_string());
     }
     
@@ -329,22 +366,22 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // CMake
-    if path.join("CMakeLists.txt").exists() {
+    if path_obj.join("CMakeLists.txt").exists() {
         return Ok("cmake".to_string());
     }
     
     // Meson
-    if path.join("meson.build").exists() {
+    if path_obj.join("meson.build").exists() {
         return Ok("meson".to_string());
     }
     
     // Makefile
-    if path.join("Makefile").exists() || path.join("makefile").exists() {
+    if path_obj.join("Makefile").exists() || path_obj.join("makefile").exists() {
         return Ok("make".to_string());
     }
     
     // Bazel
-    if path.join("BUILD").exists() || path.join("BUILD.bazel").exists() || path.join("WORKSPACE").exists() {
+    if path_obj.join("BUILD").exists() || path_obj.join("BUILD.bazel").exists() || path_obj.join("WORKSPACE").exists() {
         return Ok("bazel".to_string());
     }
     
@@ -353,21 +390,21 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // Poetry
-    if path.join("poetry.lock").exists() {
+    if path_obj.join("poetry.lock").exists() {
         return Ok("poetry".to_string());
     }
     
     // Python projects
-    if path.join("pyproject.toml").exists() {
+    if path_obj.join("pyproject.toml").exists() {
         return Ok("python".to_string());
     }
-    if path.join("setup.py").exists() {
+    if path_obj.join("setup.py").exists() {
         return Ok("python".to_string());
     }
-    if path.join("requirements.txt").exists() {
+    if path_obj.join("requirements.txt").exists() {
         return Ok("python".to_string());
     }
-    if path.join("Pipfile").exists() {
+    if path_obj.join("Pipfile").exists() {
         return Ok("pipenv".to_string());
     }
     
@@ -375,7 +412,7 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // .NET (Priority 8)
     // ============================================
     
-    if let Ok(entries) = std::fs::read_dir(path) {
+    if let Ok(entries) = std::fs::read_dir(path_obj) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -390,32 +427,32 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
     // ============================================
     
     // Ruby
-    if path.join("Gemfile").exists() {
+    if path_obj.join("Gemfile").exists() {
         return Ok("ruby".to_string());
     }
     
     // PHP
-    if path.join("composer.json").exists() {
+    if path_obj.join("composer.json").exists() {
         return Ok("php".to_string());
     }
     
     // Elixir
-    if path.join("mix.exs").exists() {
+    if path_obj.join("mix.exs").exists() {
         return Ok("elixir".to_string());
     }
     
     // Scala (SBT)
-    if path.join("build.sbt").exists() {
+    if path_obj.join("build.sbt").exists() {
         return Ok("sbt".to_string());
     }
     
     // Zig
-    if path.join("build.zig").exists() {
+    if path_obj.join("build.zig").exists() {
         return Ok("zig".to_string());
     }
     
     // Nim
-    if let Ok(entries) = std::fs::read_dir(path) {
+    if let Ok(entries) = std::fs::read_dir(path_obj) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -425,6 +462,7 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
         }
     }
     
+    eprintln!("[detect_build_system] No specific build system detected, returning 'unknown'");
     Ok("unknown".to_string())
 }
 
@@ -856,7 +894,7 @@ pub async fn list_files(dir: String, pattern: Option<String>) -> Result<Vec<Stri
     
     let mut files = Vec::new();
     
-    if let Ok(entries) = fs::read_dir(path) {
+    if let Ok(entries) = fs::read_dir(path_obj) {
         for entry in entries.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_file() {

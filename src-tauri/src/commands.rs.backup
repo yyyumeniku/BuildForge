@@ -176,56 +176,93 @@ pub async fn get_git_remote(path: String) -> Result<String, String> {
 pub async fn detect_build_system(path: String) -> Result<String, String> {
     use std::path::Path;
     
-    eprintln!("[detect_build_system] Checking: {}", path);
-    let path = Path::new(&path);
+    eprintln!("[detect_build_system] START: {}", path);
+    
+    // Validate input
+    if path.is_empty() {
+        eprintln!("[detect_build_system] ERROR: Empty path");
+        return Err("Path cannot be empty".to_string());
+    }
+    
+    let path_obj = Path::new(&path);
+    
+    if !path_obj.exists() {
+        eprintln!("[detect_build_system] ERROR: Path does not exist: {}", path);
+        return Err(format!("Path does not exist: {}", path));
+    }
+    
+    eprintln!("[detect_build_system] Path exists, checking build systems...");
     
     // ============================================
     // DESKTOP APP FRAMEWORKS (Priority 1)
     // ============================================
     
     // Tauri (Rust + Web) - check FIRST before npm
-    if path.join("src-tauri").is_dir() && path.join("src-tauri/Cargo.toml").exists() {
+    if path_obj.join("src-tauri").is_dir() && path_obj.join("src-tauri/Cargo.toml").exists() {
+        eprintln!("[detect_build_system] Detected: tauri");
         return Ok("tauri".to_string());
     }
-    if path.join("tauri.conf.json").exists() || path.join("src-tauri/tauri.conf.json").exists() {
+    if path_obj.join("tauri.conf.json").exists() || path_obj.join("src-tauri/tauri.conf.json").exists() {
+        eprintln!("[detect_build_system] Detected: tauri (via config)");
         return Ok("tauri".to_string());
     }
     
     // Wails (Go + Web)
-    if path.join("wails.json").exists() {
+    if path_obj.join("wails.json").exists() {
+        eprintln!("[detect_build_system] Detected: wails");
         return Ok("wails".to_string());
     }
-    if path.join("go.mod").exists() && (path.join("frontend").is_dir() || path.join("wails.json").exists()) {
+    if path_obj.join("go.mod").exists() && (path_obj.join("frontend").is_dir() || path_obj.join("wails.json").exists()) {
+        eprintln!("[detect_build_system] Detected: wails (via go.mod)");
         return Ok("wails".to_string());
     }
     
     // Electron (Node.js + Web)
-    if path.join("package.json").exists() {
-        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-            if content.contains("\"electron\"") || content.contains("electron-builder") || content.contains("@electron") {
-                return Ok("electron".to_string());
+    if path_obj.join("package.json").exists() {
+        match std::fs::read_to_string(path_obj.join("package.json")) {
+            Ok(content) => {
+                if content.contains("\"electron\"") || content.contains("electron-builder") || content.contains("@electron") {
+                    eprintln!("[detect_build_system] Detected: electron");
+                    return Ok("electron".to_string());
+                }
+            }
+            Err(e) => {
+                eprintln!("[detect_build_system] Warning: Could not read package.json: {}", e);
             }
         }
     }
     
     // Flutter (Dart + Native)
-    if path.join("pubspec.yaml").exists() {
-        if let Ok(content) = std::fs::read_to_string(path.join("pubspec.yaml")) {
-            if content.contains("flutter:") {
-                return Ok("flutter".to_string());
+    if path_obj.join("pubspec.yaml").exists() {
+        match std::fs::read_to_string(path_obj.join("pubspec.yaml")) {
+            Ok(content) => {
+                if content.contains("flutter:") {
+                    eprintln!("[detect_build_system] Detected: flutter");
+                    return Ok("flutter".to_string());
+                }
+            }
+            Err(e) => {
+                eprintln!("[detect_build_system] Warning: Could not read pubspec.yaml: {}", e);
             }
         }
     }
     
     // React Native / Expo
-    if path.join("package.json").exists() {
-        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-            if content.contains("react-native") || content.contains("\"expo\"") {
-                return Ok("react-native".to_string());
+    if path_obj.join("package.json").exists() {
+        match std::fs::read_to_string(path_obj.join("package.json")) {
+            Ok(content) => {
+                if content.contains("react-native") || content.contains("\"expo\"") {
+                    eprintln!("[detect_build_system] Detected: react-native");
+                    return Ok("react-native".to_string());
+                }
+            }
+            Err(e) => {
+                eprintln!("[detect_build_system] Warning: Could not read package.json for react-native: {}", e);
             }
         }
     }
-    if path.join("app.json").exists() && path.join("package.json").exists() {
+    if path_obj.join("app.json").exists() && path_obj.join("package.json").exists() {
+        eprintln!("[detect_build_system] Detected: react-native (via app.json)");
         return Ok("react-native".to_string());
     }
     
@@ -425,6 +462,7 @@ pub async fn detect_build_system(path: String) -> Result<String, String> {
         }
     }
     
+    eprintln!("[detect_build_system] No specific build system detected, returning 'unknown'");
     Ok("unknown".to_string())
 }
 

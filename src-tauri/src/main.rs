@@ -15,6 +15,19 @@ pub struct AppState {
 }
 
 fn main() {
+    // Set up panic handler to prevent crashes
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("==== PANIC DETECTED ====");
+        eprintln!("{}", panic_info);
+        if let Some(location) = panic_info.location() {
+            eprintln!("Panic occurred in file '{}' at line {}", location.file(), location.line());
+        }
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Panic payload: {}", s);
+        }
+        eprintln!("========================");
+    }));
+    
     let quit = CustomMenuItem::new("quit".to_string(), "Quit BuildForge");
     let show = CustomMenuItem::new("show".to_string(), "Show BuildForge");
     let tray_menu = SystemTrayMenu::new()
