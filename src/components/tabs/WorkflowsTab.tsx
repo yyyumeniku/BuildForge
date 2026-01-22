@@ -5,21 +5,6 @@ import { useAppStore, type WorkflowNode, type WorkflowConnection, type LocalRepo
 import { invoke } from "@tauri-apps/api/tauri";
 import { timerScheduler } from "../../lib/timerScheduler";
 
-// Helper: Run command with timeout (30 minutes for builds)
-async function runCommandWithTimeout(
-  command: string,
-  args: string[],
-  cwd: string,
-  timeoutMs: number = 1800000 // 30 minutes
-): Promise<string> {
-  return Promise.race([
-    invoke<string>("run_command", { command, args, cwd }),
-    new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error(`Command timed out after ${timeoutMs / 60000} minutes`)), timeoutMs)
-    ),
-  ]);
-}
-
 // Node type definitions with full info
 const NODE_TYPES = [
   { 
@@ -1137,6 +1122,21 @@ export function WorkflowsTab() {
               
             case "build":
               addRunLog({ level: "info", message: "=== BUILD NODE START ===" });
+              
+              // Force re-detect build system if not set or seems wrong
+              if (!selectedRepo.detectedBuildSystem || selectedRepo.detectedBuildSystem === "npm" || selectedRepo.detectedBuildSystem === "unknown") {
+                addRunLog({ level: "info", message: "Re-detecting build system..." });
+                try {
+                  const detectedSystem = await invoke<string>("detect_build_system", { path: selectedRepo.path });
+                  addRunLog({ level: "success", message: `Build system detected: ${detectedSystem}` });
+                  // Update the repo with correct build system
+                  updateRepo(selectedRepo.id, { detectedBuildSystem: detectedSystem as BuildSystem });
+                  selectedRepo.detectedBuildSystem = detectedSystem as BuildSystem;
+                } catch (detectError) {
+                  addRunLog({ level: "warn", message: `Could not re-detect build system: ${detectError}` });
+                }
+              }
+              
               const buildCmd = node.config.command || detectBuildCommand(selectedRepo);
               const targetOS = node.config.targetOS || "local";
               
