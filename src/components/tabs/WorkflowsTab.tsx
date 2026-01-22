@@ -1297,29 +1297,43 @@ export function WorkflowsTab() {
                   
                   // Cross-compilation for Windows on macOS/Linux
                   if (platform === "windows") {
-                    addRunLog({ level: "info", message: "Setting up Windows cross-compilation..." });
+                    addRunLog({ level: "info", message: "Attempting Windows cross-compilation..." });
                     
                     // Check if it's a Tauri build
                     if (cmd === "npm" && args.some(arg => arg.includes("tauri"))) {
-                      addRunLog({ level: "info", message: "Detected Tauri project - configuring Windows target" });
+                      addRunLog({ level: "info", message: "Tauri project detected - setting up Windows target" });
+                      
+                      // Check if mingw-w64 is installed FIRST
+                      try {
+                        await invoke<string>("run_command", {
+                          command: "which",
+                          args: ["x86_64-w64-mingw32-gcc"],
+                          cwd: cwd
+                        });
+                        addRunLog({ level: "success", message: "mingw-w64 toolchain found" });
+                      } catch {
+                        addRunLog({ level: "error", message: "mingw-w64 not found! Windows cross-compilation will fail." });
+                        addRunLog({ level: "info", message: "Install: macOS → brew install mingw-w64 | Linux → sudo apt install mingw-w64" });
+                        throw new Error("mingw-w64 required for Windows cross-compilation. Install it first.");
+                      }
                       
                       // Install Rust Windows target if not already installed
                       try {
-                        addRunLog({ level: "command", message: "rustup target add x86_64-pc-windows-gnu" });
+                        addRunLog({ level: "info", message: "Adding Rust Windows target..." });
                         await invoke<string>("run_command", {
                           command: "rustup",
                           args: ["target", "add", "x86_64-pc-windows-gnu"],
                           cwd: cwd
                         });
-                        addRunLog({ level: "success", message: "Windows Rust target installed" });
+                        addRunLog({ level: "success", message: "Windows Rust target ready" });
                       } catch (e: any) {
-                        addRunLog({ level: "warn", message: "Could not add Rust target (may already be installed)" });
+                        addRunLog({ level: "info", message: "Windows target already installed" });
                       }
                       
                       // Modify the build command to target Windows
                       const modifiedArgs = [...args, "--target", "x86_64-pc-windows-gnu"];
                       addRunLog({ level: "command", message: `${cmd} ${modifiedArgs.join(" ")}` });
-                      addRunLog({ level: "info", message: "Building for Windows with cross-compilation..." });
+                      addRunLog({ level: "info", message: "Starting Windows cross-compilation (this may take 10-15 minutes)..." });
                       
                       try {
                         const result = await invoke<string>("run_command", { 
@@ -1327,22 +1341,33 @@ export function WorkflowsTab() {
                           args: modifiedArgs,
                           cwd: cwd
                         });
-                        addRunLog({ level: "success", message: "Windows build completed via cross-compilation" });
+                        addRunLog({ level: "success", message: "✓ Windows build completed via cross-compilation" });
                         return result;
                       } catch (buildError: any) {
-                        const errorStr = typeof buildError === 'string' ? buildError : JSON.stringify(buildError);
-                        if (errorStr.includes("mingw") || errorStr.includes("linker")) {
-                          addRunLog({ level: "error", message: "mingw-w64 not found. Install it to cross-compile for Windows:" });
-                          addRunLog({ level: "info", message: "  macOS: brew install mingw-w64" });
-                          addRunLog({ level: "info", message: "  Linux: sudo apt install mingw-w64" });
+                        const errorStr = typeof buildError === 'string' ? buildError : buildError?.message || JSON.stringify(buildError);
+                        
+                        // Better error messages
+                        if (errorStr.includes("timeout") || errorStr.includes("timed out")) {
+                          addRunLog({ level: "error", message: "Windows build timed out after 30 minutes" });
+                          throw new Error("Windows build timeout - try building on a Windows machine directly");
+                        } else if (errorStr.includes("mingw") || errorStr.includes("linker") || errorStr.includes("x86_64-w64-mingw32")) {
+                          addRunLog({ level: "error", message: "Windows linker error - mingw-w64 may not be properly configured" });
+                          throw new Error("mingw-w64 linker error - reinstall mingw-w64");
+                        } else {
+                          addRunLog({ level: "error", message: `Windows build error: ${errorStr.substring(0, 200)}` });
+                          throw buildError;
                         }
-                        throw buildError;
                       }
+                    } else {
+                      // Not a Tauri project, skip Windows cross-compilation
+                      addRunLog({ level: "warn", message: "Windows cross-compilation only supported for Tauri projects" });
+                      throw new Error("Windows build skipped - cross-compilation not available for this project type");
                     }
                   }
                 }
                 
-                // Run locally
+                // Run locally (current platform)
+                addRunLog({ level: "info", message: `Running build on current platform (${platform})...` });
                 return await invoke<string>("run_command", { 
                   command: cmd,
                   args: args,
@@ -1365,29 +1390,51 @@ export function WorkflowsTab() {
               try {
                 addRunLog({ level: "info", message: "Invoking build..." });
                 
-                // If targeting all platforms, run IN PARALLEL for maximum speed
+                // If targeting all platforms, build SEQUENTIALLY to prevent system overload
                 if (targetOS === "all") {
-                  const platforms = ["linux", "windows", "macos"];
-                  addRunLog({ level: "info", message: "Building for ALL platforms in parallel..." });
+                  const platforms = ["macos", "linux", "windows"]; // macOS first (current platform likely fastest)
+                  addRunLog({ level: "info", message: "Building for ALL platforms sequentially (prevents system overload)..." });
+                  addRunLog({ level: "info", message: "This may take 15-30 minutes depending on project size." });
                   
-                  const buildPromises = platforms.map(async (platform) => {
-                    addRunLog({ level: "info", message: `--- Starting ${platform} build ---` });
+                  let successCount = 0;
+                  const failedBuilds: string[] = [];
+                  
+                  for (const platform of platforms) {
+                    addRunLog({ level: "info", message: `\n━━━ Building for ${platform.toUpperCase()} ━━━` });
                     try {
                       const result = await runBuildOnPlatform(platform, buildCommand, buildArgs, buildDirectory);
-                      addRunLog({ level: "success", message: `${platform} build completed!` });
-                      addRunLog({ level: "success", message: result || "(no output)" });
-                      return { platform, success: true, result };
+                      addRunLog({ level: "success", message: `✓ ${platform} build completed successfully!` });
+                      if (result && result.trim()) {
+                        addRunLog({ level: "info", message: result.substring(0, 500) }); // Limit output
+                      }
+                      successCount++;
                     } catch (platformError: any) {
-                      addRunLog({ level: "warn", message: `${platform} build failed: ${platformError}` });
-                      return { platform, success: false, error: platformError };
+                      const errorMsg = platformError?.message || platformError?.toString() || "Unknown error";
+                      addRunLog({ level: "error", message: `✗ ${platform} build failed: ${errorMsg.substring(0, 200)}` });
+                      failedBuilds.push(platform);
+                      
+                      // Check if error is timeout
+                      if (errorMsg.includes("timeout") || errorMsg.includes("timed out")) {
+                        addRunLog({ level: "warn", message: `${platform} build timed out after 30 minutes. Try building locally or use Docker.` });
+                      }
+                      
+                      // Continue with other platforms even if one fails
+                      addRunLog({ level: "warn", message: `Continuing with remaining platforms...` });
                     }
-                  });
+                  }
                   
-                  // Wait for all builds to complete
-                  const results = await Promise.allSettled(buildPromises);
-                  const successCount = results.filter(r => r.status === "fulfilled").length;
-                  addRunLog({ level: "info", message: `Parallel builds complete: ${successCount}/${platforms.length} succeeded` });
+                  addRunLog({ level: "info", message: `\n━━━ BUILD SUMMARY ━━━` });
+                  addRunLog({ level: "info", message: `Successful: ${successCount}/${platforms.length}` });
+                  if (failedBuilds.length > 0) {
+                    addRunLog({ level: "warn", message: `Failed: ${failedBuilds.join(", ")}` });
+                  }
+                  
+                  // Only throw error if ALL builds failed
+                  if (successCount === 0) {
+                    throw new Error("All platform builds failed. Check logs for details.");
+                  }
                 } else {
+                  addRunLog({ level: "info", message: `Building for ${targetOS}...` });
                   const buildResult = await runBuildOnPlatform(targetOS, buildCommand, buildArgs, buildDirectory);
                   addRunLog({ level: "success", message: "Build output:" });
                   addRunLog({ level: "success", message: buildResult || "(no output)" });
@@ -2124,17 +2171,21 @@ export function WorkflowsTab() {
                   }
                 }
                 
-                addRunLog({ level: "info", message: `Uploading ${filesToUpload.length} file(s)...` });
+                addRunLog({ level: "info", message: `Uploading ${filesToUpload.length} file(s) to GitHub release...` });
                 
                 let uploadedCount = 0;
+                let totalBytes = 0;
                 for (const artifactPath of filesToUpload.slice(0, 50)) { // Limit to 50 files
                   try {
                     const fileName = artifactPath.split("/").pop() || "artifact";
-                    addRunLog({ level: "info", message: `Uploading: ${fileName}` });
                     
                     // Read file using Tauri fs API
                     const { readBinaryFile } = await import("@tauri-apps/api/fs");
                     const fileContent = await readBinaryFile(artifactPath);
+                    const fileSizeMB = (fileContent.length / 1024 / 1024).toFixed(2);
+                    totalBytes += fileContent.length;
+                    
+                    addRunLog({ level: "info", message: `[${uploadedCount + 1}/${filesToUpload.length}] Uploading: ${fileName} (${fileSizeMB} MB)` });
                     
                     // Upload to GitHub release using Tauri HTTP client to avoid CORS
                     const uploadUrl = release.upload_url.replace("{?name,label}", `?name=${encodeURIComponent(fileName)}`);
@@ -2152,6 +2203,7 @@ export function WorkflowsTab() {
                         "Accept": "application/vnd.github.v3+json",
                       },
                       body: Body.bytes(fileContent),
+                      timeout: 300, // 5 minute timeout per file
                     });
                     
                     if (uploadResponse.ok) {
@@ -2164,16 +2216,17 @@ export function WorkflowsTab() {
                         addRunLog({ level: "info", message: `Asset ${fileName} already exists, skipping` });
                         uploadedCount++; // Count as successful
                       } else {
-                        addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${JSON.stringify(uploadResponse.data)}` });
+                        addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${JSON.stringify(uploadResponse.data)?.substring(0, 100)}` });
                       }
                     }
                   } catch (uploadError: any) {
                     const errorMsg = uploadError.message || uploadError;
+                    const fileName = artifactPath.split("/").pop() || "artifact";
                     if (errorMsg.includes("already_exists")) {
-                      addRunLog({ level: "info", message: `Asset already exists, skipping` });
+                      addRunLog({ level: "info", message: `Asset ${fileName} already exists, skipping` });
                       uploadedCount++;
                     } else {
-                      addRunLog({ level: "warn", message: `Upload error: ${errorMsg}` });
+                      addRunLog({ level: "warn", message: `Upload error for ${fileName}: ${errorMsg.substring(0, 100)}` });
                     }
                   }
                 }
@@ -2183,7 +2236,9 @@ export function WorkflowsTab() {
                   throw new Error("No artifacts were uploaded to the release");
                 }
                 
-                addRunLog({ level: "success", message: `Artifact upload complete! ${uploadedCount} file(s) uploaded.` });
+                const totalMB = (totalBytes / 1024 / 1024).toFixed(2);
+                addRunLog({ level: "success", message: `✓ Upload complete! ${uploadedCount} file(s) uploaded (${totalMB} MB total)` });
+                addRunLog({ level: "success", message: `Release URL: ${release.html_url}` });
               } else {
                 addRunLog({ level: "error", message: "No artifacts found to upload" });
                 addRunLog({ level: "error", message: "Release created but no files were uploaded" });
