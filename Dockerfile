@@ -1,5 +1,5 @@
 # BuildForge Secure Multi-Platform Docker Image
-# Minimal vulnerabilities with security hardening
+# Full cross-compilation support with security hardening
 # Multi-arch: supports both ARM64 and x86_64
 
 FROM debian:bookworm-slim
@@ -9,7 +9,7 @@ RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     curl ca-certificates git build-essential pkg-config libssl-dev wget \
-    gnupg2 xz-utils && \
+    gnupg2 xz-utils software-properties-common && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 LTS (latest stable)
@@ -24,9 +24,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
     rustup target add x86_64-pc-windows-gnu && \
     rustup update
 
-# Install MinGW for Windows (no Wine - reduces 100+ vulnerabilities)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends mingw-w64 && \
+# Install Wine (stable) + MinGW for Windows cross-compilation
+RUN dpkg --add-architecture i386 && \
+    mkdir -pm755 /etc/apt/keyrings && \
+    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
+    wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends winehq-stable mingw-w64 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install latest Zig for macOS cross-compilation (arch-specific)
@@ -44,10 +48,10 @@ RUN ARCH=$(uname -m) && \
 RUN mkdir -p /root/.cargo && \
     echo '[target.x86_64-pc-windows-gnu]\nlinker = "x86_64-w64-mingw32-gcc"\n\n[target.x86_64-apple-darwin]\nlinker = "zig"\nar = "zig"\n' > /root/.cargo/config.toml
 
-# Security hardening: Remove unnecessary packages
+# Security hardening: Remove unnecessary packages and clean cache
 RUN apt-get autoremove -y && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/*
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
