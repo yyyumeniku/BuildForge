@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { NodeRepository, WorkflowRepository, CustomNode, WorkflowTemplate } from "../types/marketplace";
 
 // Types
 export interface GitHubUser {
@@ -220,6 +221,12 @@ interface AppState {
   // App Settings
   settings: AppSettings;
   
+  // Marketplace
+  nodeRepositories: NodeRepository[];
+  workflowRepositories: WorkflowRepository[];
+  customNodes: CustomNode[];
+  workflowTemplates: WorkflowTemplate[];
+  
   // Undo/Redo history
   history: {
     past: Partial<AppState>[];
@@ -283,6 +290,19 @@ interface AppState {
   // Settings actions
   updateSettings: (updates: Partial<AppSettings>) => void;
   
+  // Marketplace actions
+  addNodeRepository: (repo: NodeRepository) => void;
+  removeNodeRepository: (id: string) => void;
+  updateNodeRepository: (id: string, updates: Partial<NodeRepository>) => void;
+  refreshNodeRepository: (id: string) => Promise<void>;
+  addWorkflowRepository: (repo: WorkflowRepository) => void;
+  removeWorkflowRepository: (id: string) => void;
+  updateWorkflowRepository: (id: string, updates: Partial<WorkflowRepository>) => void;
+  refreshWorkflowRepository: (id: string) => Promise<void>;
+  installCustomNode: (node: CustomNode) => void;
+  uninstallCustomNode: (id: string) => void;
+  installWorkflowTemplate: (template: WorkflowTemplate) => void;
+  
   // Undo/Redo actions
   undo: () => void;
   redo: () => void;
@@ -328,6 +348,10 @@ export const useAppStore = create<AppState>()(
         autoSave: true,
         notificationsEnabled: true,
       },
+      nodeRepositories: [],
+      workflowRepositories: [],
+      customNodes: [],
+      workflowTemplates: [],
       
       history: {
         past: [],
@@ -628,6 +652,88 @@ export const useAppStore = create<AppState>()(
         }));
       },
       
+      // Marketplace actions
+      addNodeRepository: (repo) => {
+        set((state) => ({
+          nodeRepositories: [...state.nodeRepositories, repo],
+        }));
+      },
+      
+      removeNodeRepository: (id) => {
+        set((state) => ({
+          nodeRepositories: state.nodeRepositories.filter(r => r.id !== id),
+          customNodes: state.customNodes.filter(n => n.repository !== id),
+        }));
+      },
+      
+      updateNodeRepository: (id, updates) => {
+        set((state) => ({
+          nodeRepositories: state.nodeRepositories.map(r => 
+            r.id === id ? { ...r, ...updates } : r
+          ),
+        }));
+      },
+      
+      refreshNodeRepository: async (id) => {
+        console.log("Refreshing node repository:", id);
+        // TODO: Fetch from GitHub and update customNodes
+      },
+      
+      addWorkflowRepository: (repo) => {
+        set((state) => ({
+          workflowRepositories: [...state.workflowRepositories, repo],
+        }));
+      },
+      
+      removeWorkflowRepository: (id) => {
+        set((state) => ({
+          workflowRepositories: state.workflowRepositories.filter(r => r.id !== id),
+          workflowTemplates: state.workflowTemplates.filter(w => w.repository !== id),
+        }));
+      },
+      
+      updateWorkflowRepository: (id, updates) => {
+        set((state) => ({
+          workflowRepositories: state.workflowRepositories.map(r => 
+            r.id === id ? { ...r, ...updates } : r
+          ),
+        }));
+      },
+      
+      refreshWorkflowRepository: async (id) => {
+        console.log("Refreshing workflow repository:", id);
+        // TODO: Fetch from GitHub and update workflowTemplates
+      },
+      
+      installCustomNode: (node) => {
+        set((state) => ({
+          customNodes: [...state.customNodes, node],
+        }));
+      },
+      
+      uninstallCustomNode: (id) => {
+        set((state) => ({
+          customNodes: state.customNodes.filter(n => n.id !== id),
+        }));
+      },
+      
+      installWorkflowTemplate: (template) => {
+        const newWorkflow: Workflow = {
+          id: crypto.randomUUID(),
+          name: template.name,
+          repoId: null,
+          nodes: template.nodes,
+          connections: template.edges,
+          nextVersion: "0.1",
+          variables: {},
+          history: [],
+          historyIndex: -1,
+        };
+        set((state) => ({
+          workflows: [...state.workflows, newWorkflow],
+        }));
+      },
+      
       // Workflow run actions
       startWorkflowRun: (workflowId) => {
         const runId = crypto.randomUUID();
@@ -774,6 +880,9 @@ export const useAppStore = create<AppState>()(
         workflows: state.workflows,
         localActions: state.localActions,
         settings: state.settings,
+        nodeRepositories: state.nodeRepositories,
+        workflowRepositories: state.workflowRepositories,
+        customNodes: state.customNodes,
       }),
     }
   )
