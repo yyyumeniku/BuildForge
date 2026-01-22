@@ -24,9 +24,10 @@ function parseVersion(versionStr: string): { major: number; minor: number; patch
 function getNextVersion(versionStr: string): string {
   const parsed = parseVersion(versionStr);
   if (parsed) {
-    return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
+    // Increment minor version (0.1 -> 0.2) instead of patch
+    return `${parsed.major}.${parsed.minor + 1}`;
   }
-  return "1.0.0";
+  return "0.1";
 }
 
 // Detect build system from repository files

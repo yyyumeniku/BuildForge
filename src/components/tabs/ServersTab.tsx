@@ -269,26 +269,10 @@ export function ServersTab() {
     addLog("info", `Creating ${os} Docker container for cross-platform builds...`);
     
     try {
-      let image: string;
-      let platform: string | undefined;
-      let setupCommands: string[];
-      
-      if (os === "windows") {
-        // Custom ARM64-compatible Wine container (~800MB, 47% smaller)
-        image = "buildforge/windows-builder:latest";
-        platform = "linux/arm64";
-        setupCommands = []; // Already built-in
-      } else if (os === "linux") {
-        // Custom ARM64 Alpine Linux (~150MB, 81% smaller)
-        image = "buildforge/linux-builder:latest";
-        platform = "linux/arm64";
-        setupCommands = []; // Already built-in
-      } else {
-        // Custom ARM64 OSXCross (~200MB, 90% smaller)
-        image = "buildforge/macos-builder:latest";
-        platform = "linux/arm64";
-        setupCommands = []; // Already built-in
-      }
+      // Use single unified Docker image for all platforms
+      const image = "yyyumeniku/buildforge:latest";
+      const platform = "linux/arm64";
+      const setupCommands: string[] = []; // Everything pre-built
       
       const containerName = `buildforge-${os}-builder`;
       

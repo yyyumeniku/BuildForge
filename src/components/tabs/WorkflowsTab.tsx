@@ -1094,7 +1094,8 @@ export function WorkflowsTab() {
                         });
                       }
                       
-                      const workspaceInContainer = cwd; // Use same path as host
+                      // Use container path, not host path!
+                      const workspaceInContainer = `/workspace/${selectedRepo.repo}`;
                       
                       // Auto-install dependencies based on detected build system
                       addRunLog({ level: "info", message: "Checking and installing dependencies..." });
@@ -1736,24 +1737,102 @@ export function WorkflowsTab() {
               
               addRunLog({ level: "info", message: `URL: ${release.html_url}` });
               
-              // Try to find and upload artifacts
-              const detectedSystem = selectedRepo.detectedBuildSystem;
-              let artifactPatterns: string[] = [];
+              // Get artifacts from previous build node
+              const buildNode = sortedNodes.find(n => n.type === "build");
+              let artifactPaths: string[] = [];
               
-              if (detectedSystem === "cargo") {
-                // Look for Rust binaries
-                artifactPatterns = ["target/release/*"];
-              } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm") {
-                // Look for zip/tar files or dist folder
-                artifactPatterns = ["*.zip", "*.tar.gz", "dist/*.zip"];
-              } else if (detectedSystem === "go") {
-                artifactPatterns = ["*.exe", selectedRepo.repo || "app"];
+              if (buildNode?.config.artifactPaths) {
+                try {
+                  artifactPaths = JSON.parse(buildNode.config.artifactPaths);
+                  addRunLog({ level: "info", message: `Found ${artifactPaths.length} artifact(s) from build node` });
+                } catch {
+                  addRunLog({ level: "warn", message: "Failed to parse artifact paths from build node" });
+                }
               }
               
-              if (artifactPatterns.length > 0 && buildDir) {
-                addRunLog({ level: "info", message: "Searching for build artifacts..." });
-                addRunLog({ level: "info", message: `Looking in: ${buildDir}` });
-                addRunLog({ level: "warn", message: "Note: Artifact upload requires manual configuration - see release page" });
+              // If no artifacts from build node, try to auto-detect
+              if (artifactPaths.length === 0) {
+                addRunLog({ level: "info", message: "No artifacts from build node, searching..." });
+                const detectedSystem = selectedRepo.detectedBuildSystem;
+                const searchPaths: string[] = [];
+                
+                if (detectedSystem === "tauri" || detectedSystem === "cargo") {
+                  searchPaths.push(
+                    `${buildDir}/src-tauri/target/release/bundle`,
+                    `${buildDir}/src-tauri/target/*/release/bundle`,
+                    `${buildDir}/target/release/bundle`,
+                    `${buildDir}/target/*/release`,
+                    `${buildDir}/src-tauri/target/release`,
+                    `${buildDir}/target/release`
+                  );
+                } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm") {
+                  searchPaths.push(
+                    `${buildDir}/dist`,
+                    `${buildDir}/build`,
+                    `${buildDir}/out`
+                  );
+                }
+                
+                // Search for actual files in these paths
+                for (const searchPath of searchPaths) {
+                  try {
+                    const findResult = await invoke<string>("run_command", {
+                      command: "find",
+                      args: [searchPath, "-type", "f", "(", "-name", "*.exe", "-o", "-name", "*.app", "-o", "-name", "*.dmg", "-o", "-name", "*.deb", "-o", "-name", "*.AppImage", "-o", "-name", "*.msi", "-o", "-name", "*.zip", "-o", "-name", "*.tar.gz", ")"],
+                      cwd: buildDir
+                    });
+                    const files = findResult.split("\n").filter(f => f.trim());
+                    if (files.length > 0) {
+                      artifactPaths.push(...files);
+                      addRunLog({ level: "success", message: `Found ${files.length} artifact(s) in ${searchPath}` });
+                    }
+                  } catch {
+                    // Path doesn't exist, continue
+                  }
+                }
+              }
+              
+              // Upload artifacts if found
+              if (artifactPaths.length > 0) {
+                addRunLog({ level: "info", message: `Uploading ${artifactPaths.length} artifact(s)...` });
+                
+                for (const artifactPath of artifactPaths.slice(0, 10)) { // Limit to 10 artifacts
+                  try {
+                    const fileName = artifactPath.split("/").pop() || "artifact";
+                    addRunLog({ level: "info", message: `Uploading: ${fileName}` });
+                    
+                    // Read file as base64
+                    const fileContent = await invoke<string>("read_file_base64", {
+                      path: artifactPath
+                    });
+                    
+                    // Upload to GitHub release
+                    const uploadUrl = release.upload_url.replace("{?name,label}", `?name=${encodeURIComponent(fileName)}`);
+                    const uploadResponse = await fetch(uploadUrl, {
+                      method: "POST",
+                      headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        "Content-Type": "application/octet-stream",
+                      },
+                      body: Uint8Array.from(atob(fileContent), c => c.charCodeAt(0)),
+                    });
+                    
+                    if (uploadResponse.ok) {
+                      addRunLog({ level: "success", message: `✓ Uploaded: ${fileName}` });
+                    } else {
+                      const error = await uploadResponse.text();
+                      addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${error}` });
+                    }
+                  } catch (uploadError: any) {
+                    addRunLog({ level: "warn", message: `Upload error: ${uploadError.message || uploadError}` });
+                  }
+                }
+                
+                addRunLog({ level: "success", message: "Artifact upload complete!" });
+              } else {
+                addRunLog({ level: "warn", message: "No artifacts found to upload" });
+                addRunLog({ level: "info", message: "Build artifacts may need to be manually uploaded to:" });
+                addRunLog({ level: "info", message: release.html_url });
               }
               
               // Cleanup temp build directory if it was created by clone
