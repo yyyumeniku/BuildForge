@@ -72,6 +72,7 @@ fn main() {
             commands::check_oauth_result,
             commands::exchange_oauth_code,
             commands::run_command,
+            commands::is_directory,
             commands::start_device_flow,
             commands::poll_device_flow,
             commands::list_files,

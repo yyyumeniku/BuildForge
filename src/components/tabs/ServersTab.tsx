@@ -270,7 +270,7 @@ export function ServersTab() {
     
     try {
       // Use single unified Docker image for all platforms
-      const image = "yyyumeniku/buildforge:latest";
+      const image = "yyyumeniku/buildforge-docker-image:latest";
       const platform = "linux/arm64";
       const setupCommands: string[] = []; // Everything pre-built
       

@@ -455,7 +455,7 @@ export function WorkflowsTab() {
     updateWorkflow(workflow.id, { 
       repoId,
       name: repo ? `${repo.owner}/${repo.repo}` : "New Workflow",
-      nextVersion: repo?.nextVersion || "1.0.0",
+      nextVersion: repo?.nextVersion || "0.1",
     });
   };
 
@@ -1796,17 +1796,25 @@ export function WorkflowsTab() {
               if (artifactPaths.length > 0) {
                 addRunLog({ level: "info", message: `Uploading ${artifactPaths.length} artifact(s)...` });
                 
+                let uploadedCount = 0;
                 for (const artifactPath of artifactPaths.slice(0, 10)) { // Limit to 10 artifacts
                   try {
+                    // Check if it's a file or directory
+                    const isDir = await invoke<boolean>("is_directory", { path: artifactPath });
+                    
+                    if (isDir) {
+                      addRunLog({ level: "warn", message: `Skipping directory: ${artifactPath}` });
+                      continue;
+                    }
+                    
                     const fileName = artifactPath.split("/").pop() || "artifact";
                     addRunLog({ level: "info", message: `Uploading: ${fileName}` });
                     
-                    // Read file as base64
-                    const fileContent = await invoke<string>("read_file_base64", {
-                      path: artifactPath
-                    });
+                    // Read file using Tauri fs API
+                    const { readBinaryFile } = await import("@tauri-apps/api/fs");
+                    const fileContent = await readBinaryFile(artifactPath);
                     
-                    // Upload to GitHub release
+                    // Upload to GitHub release - create new Uint8Array for fetch body
                     const uploadUrl = release.upload_url.replace("{?name,label}", `?name=${encodeURIComponent(fileName)}`);
                     const uploadResponse = await fetch(uploadUrl, {
                       method: "POST",
@@ -1814,11 +1822,12 @@ export function WorkflowsTab() {
                         Authorization: `Bearer ${accessToken}`,
                         "Content-Type": "application/octet-stream",
                       },
-                      body: Uint8Array.from(atob(fileContent), c => c.charCodeAt(0)),
+                      body: new Uint8Array(fileContent),
                     });
                     
                     if (uploadResponse.ok) {
                       addRunLog({ level: "success", message: `✓ Uploaded: ${fileName}` });
+                      uploadedCount++;
                     } else {
                       const error = await uploadResponse.text();
                       addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${error}` });
@@ -1828,11 +1837,16 @@ export function WorkflowsTab() {
                   }
                 }
                 
-                addRunLog({ level: "success", message: "Artifact upload complete!" });
+                if (uploadedCount === 0) {
+                  addRunLog({ level: "error", message: "Failed to upload any artifacts!" });
+                  throw new Error("No artifacts were uploaded to the release");
+                }
+                
+                addRunLog({ level: "success", message: `Artifact upload complete! ${uploadedCount} file(s) uploaded.` });
               } else {
-                addRunLog({ level: "warn", message: "No artifacts found to upload" });
-                addRunLog({ level: "info", message: "Build artifacts may need to be manually uploaded to:" });
-                addRunLog({ level: "info", message: release.html_url });
+                addRunLog({ level: "error", message: "No artifacts found to upload" });
+                addRunLog({ level: "error", message: "Release created but no files were uploaded" });
+                throw new Error("No artifacts found - release deployment failed");
               }
               
               // Cleanup temp build directory if it was created by clone

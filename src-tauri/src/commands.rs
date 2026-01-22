@@ -492,6 +492,13 @@ pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Res
 }
 
 #[tauri::command]
+pub fn is_directory(path: String) -> Result<bool, String> {
+    use std::path::Path;
+    let p = Path::new(&path);
+    Ok(p.is_dir())
+}
+
+#[tauri::command]
 pub async fn install_package(package_name: String) -> Result<String, String> {
     use std::process::Command;
     

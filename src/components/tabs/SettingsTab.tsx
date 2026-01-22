@@ -42,15 +42,15 @@ export function SettingsTab() {
       if (folderPath) {
         // Use shell command to open folder in file explorer
         // On macOS: "open", on Windows: "explorer", on Linux: "xdg-open"
-        await invoke<string>(\"run_command\", {
-          command: \"sh\",
-          args: [\"-c\", `open \"${folderPath}\"`],
-          cwd: \"/\"
+        await invoke<string>("run_command", {
+          command: "sh",
+          args: ["-c", `open "${folderPath}"`],
+          cwd: "/"
         });
       }
     } catch (e) {
-      console.error(\"Failed to open folder:\", e);
-      alert(\"Failed to open folder: \" + JSON.stringify(e));
+      console.error("Failed to open folder:", e);
+      alert("Failed to open folder: " + JSON.stringify(e));
     }
   };
 
