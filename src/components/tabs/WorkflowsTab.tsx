@@ -1806,7 +1806,7 @@ export function WorkflowsTab() {
                     // List all files in directory recursively
                     addRunLog({ level: "info", message: `Expanding directory: ${artifactPath}` });
                     try {
-                      const dirFiles = await invoke<string[]>("list_files", { path: artifactPath });
+                      const dirFiles = await invoke<string[]>("list_files", { dir: artifactPath });
                       filesToUpload.push(...dirFiles);
                       addRunLog({ level: "info", message: `Found ${dirFiles.length} files in directory` });
                     } catch (e) {

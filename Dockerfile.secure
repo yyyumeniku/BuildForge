@@ -1,0 +1,78 @@
+# BuildForge Secure Multi-Platform Docker Image
+# Minimized vulnerabilities with multi-stage build
+# Multi-arch: supports both ARM64 and x86_64
+
+# Build stage with full toolchain
+FROM debian:bookworm-slim AS builder
+
+# Install only essential build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git build-essential pkg-config libssl-dev wget \
+    gnupg2 software-properties-common xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Rust with minimal profile
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && \
+    . /root/.cargo/env && \
+    rustup target add x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
+
+# Install MinGW for Windows cross-compilation (no Wine to reduce vulnerabilities)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends mingw-w64 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install latest Zig for macOS cross-compilation (arch-specific)
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIGARCH="aarch64"; \
+    else \
+        ZIGARCH="x86_64"; \
+    fi && \
+    curl -L https://ziglang.org/download/0.13.0/zig-linux-${ZIGARCH}-0.13.0.tar.xz | tar -xJ -C /usr/local && \
+    mv /usr/local/zig-linux-* /usr/local/zig && \
+    ln -s /usr/local/zig/zig /usr/local/bin/zig
+
+# Configure Cargo for cross-compilation
+RUN mkdir -p /root/.cargo && \
+    echo '[target.x86_64-pc-windows-gnu]\nlinker = "x86_64-w64-mingw32-gcc"\n\n[target.x86_64-apple-darwin]\nlinker = "zig"\nar = "zig"\n' > /root/.cargo/config.toml
+
+# Final minimal runtime stage
+FROM debian:bookworm-slim
+
+# Copy only essential tools from builder
+COPY --from=builder /usr/local/node /usr/local/node
+COPY --from=builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=builder /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=builder /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=builder /root/.cargo /root/.cargo
+COPY --from=builder /root/.rustup /root/.rustup
+COPY --from=builder /usr/local/zig /usr/local/zig
+COPY --from=builder /usr/bin/x86_64-w64-mingw32-* /usr/bin/
+COPY --from=builder /usr/lib/gcc/x86_64-w64-mingw32 /usr/lib/gcc/x86_64-w64-mingw32
+COPY --from=builder /usr/x86_64-w64-mingw32 /usr/x86_64-w64-mingw32
+
+# Install only runtime essentials (no dev packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git libssl3 && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    rm -rf /var/tmp/* /tmp/*
+
+# Security: Run as non-root user
+RUN useradd -m -u 1000 builder && \
+    mkdir -p /workspace && \
+    chown -R builder:builder /workspace /root/.cargo /root/.rustup
+
+ENV PATH="/root/.cargo/bin:/usr/local/zig:${PATH}"
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32-gcc"
+ENV USER=builder
+
+WORKDIR /workspace
+USER builder
+
+CMD ["/bin/bash"]
