@@ -5,6 +5,21 @@ import { useAppStore, type WorkflowNode, type WorkflowConnection, type LocalRepo
 import { invoke } from "@tauri-apps/api/tauri";
 import { timerScheduler } from "../../lib/timerScheduler";
 
+// Helper: Run command with timeout (30 minutes for builds)
+async function runCommandWithTimeout(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutMs: number = 1800000 // 30 minutes
+): Promise<string> {
+  return Promise.race([
+    invoke<string>("run_command", { command, args, cwd }),
+    new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error(`Command timed out after ${timeoutMs / 60000} minutes`)), timeoutMs)
+    ),
+  ]);
+}
+
 // Node type definitions with full info
 const NODE_TYPES = [
   { 

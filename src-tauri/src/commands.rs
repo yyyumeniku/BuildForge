@@ -620,50 +620,14 @@ pub async fn exchange_oauth_code(code: String) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Result<String, String> {
-    use std::process::{Command, Stdio};
-    use std::time::Duration;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
+    use std::process::Command;
     
-    // Set a reasonable timeout (30 minutes for builds, they can be long)
-    let timeout = Duration::from_secs(1800);
-    
-    let command_clone = command.clone();
-    let args_clone = args.clone();
-    let cwd_clone = cwd.clone();
-    
-    // Run command in a separate thread with timeout
-    let result = Arc::new(Mutex::new(None));
-    let result_clone = result.clone();
-    
-    let handle = thread::spawn(move || {
-        let output = Command::new(&command_clone)
-            .args(&args_clone)
-            .current_dir(&cwd_clone)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
-        
-        let mut res = result_clone.lock().unwrap();
-        *res = Some(output);
-    });
-    
-    // Wait for thread with timeout
-    if handle.join().is_err() {
-        return Err("Command thread panicked".to_string());
-    }
-    
-    // Check if we got a result
-    let output_result = {
-        let res = result.lock().unwrap();
-        res.clone()
-    };
-    
-    let output = match output_result {
-        Some(Ok(out)) => out,
-        Some(Err(e)) => return Err(format!("Failed to execute command: {}", e)),
-        None => return Err("Command timed out after 30 minutes".to_string()),
-    };
+    // Simple approach: just run the command (Tauri handles timeouts at a higher level)
+    let output = Command::new(&command)
+        .args(&args)
+        .current_dir(&cwd)
+        .output()
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
     
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -672,7 +636,9 @@ pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Res
         Ok(format!("{}{}", stdout, stderr))
     } else {
         // Include both stdout and stderr in error, and the exit code
-        let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
+        let exit_code = output.status.code()
+            .map(|c: i32| c.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
         let error_msg = if combined.is_empty() {
             format!("Command '{}' failed with exit code {}", command, exit_code)
