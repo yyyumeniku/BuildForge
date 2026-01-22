@@ -251,7 +251,7 @@ export function ReleasesTab() {
       updateRepo(repoId, {
         releases,
         latestVersion,
-        nextVersion: latestVersion ? getNextVersion(latestVersion) : "1.0.0",
+        nextVersion: latestVersion ? getNextVersion(latestVersion) : "0.1",
       });
     } finally {
       setRefreshing(null);

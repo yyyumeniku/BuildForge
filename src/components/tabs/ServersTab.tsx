@@ -991,61 +991,36 @@ export function ServersTab() {
                     </div>
                   )}
                   
-                  {/* Create Container Buttons */}
+                  {/* Create Unified Container */}
                   <div className="space-y-3">
+                    <p className="text-sm text-slate-400">Unified Multi-Platform Builder</p>
+                    <p className="text-xs text-slate-600">Single container with all tools: Windows (Wine/MinGW), Linux, macOS (Zig)</p>
                     <div className="flex flex-wrap gap-2">
-                      {!dockerContainers.find(c => c.os === "linux") && (
+                      {dockerContainers.length === 0 && (
                         <button
                           onClick={() => createDockerContainer("linux")}
                           disabled={creatingContainer !== null}
-                          className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
                         >
                           {creatingContainer === "linux" ? (
                             <RefreshCw className="w-4 h-4 animate-spin" />
                           ) : (
                             <Plus className="w-4 h-4" />
                           )}
-                          Add Linux Container
-                        </button>
-                      )}
-                      {!dockerContainers.find(c => c.os === "windows") && (
-                        <button
-                          onClick={() => createDockerContainer("windows")}
-                          disabled={creatingContainer !== null}
-                          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
-                        >
-                          {creatingContainer === "windows" ? (
-                            <RefreshCw className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Plus className="w-4 h-4" />
-                          )}
-                          Add Windows Container
-                        </button>
-                      )}
-                      {!dockerContainers.find(c => c.os === "macos") && (
-                        <button
-                          onClick={() => createDockerContainer("macos")}
-                          disabled={creatingContainer !== null}
-                          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium text-white disabled:opacity-50"
-                        >
-                          {creatingContainer === "macos" ? (
-                            <RefreshCw className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Plus className="w-4 h-4" />
-                          )}
-                          Add macOS Container
+                          Create Build Container
                         </button>
                       )}
                     </div>
                     <div className="p-3 bg-slate-800 rounded border border-slate-700">
                       <p className="text-xs text-slate-400 mb-2">
-                        <strong className="text-slate-300">Cross-Platform Building:</strong>
+                        <strong className="text-slate-300">Multi-Platform Container:</strong>
                       </p>
                       <ul className="text-xs text-slate-500 space-y-1 ml-4 list-disc">
-                        <li>Linux: Docker container with full build environment</li>
-                        <li>Windows: Wine-based container with Windows build tools</li>
-                        <li>macOS: OSXCross container for macOS cross-compilation</li>
-                        <li>Auto-installs dependencies when needed</li>
+                        <li>Single image with all cross-compilation tools pre-installed</li>
+                        <li>Windows builds: Wine 9 + MinGW-w64</li>
+                        <li>Linux builds: Native Rust + Node.js 20</li>
+                        <li>macOS builds: Zig 0.13 cross-compiler</li>
+                        <li>Size: 1.22GB compressed, 5.17GB expanded</li>
                       </ul>
                     </div>
                   </div>

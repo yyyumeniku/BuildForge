@@ -40,11 +40,11 @@ export function SettingsTab() {
     try {
       const folderPath = storagePath || defaultPath;
       if (folderPath) {
-        // Use shell command to open folder in file explorer
+        // Use direct command to open folder in file explorer
         // On macOS: "open", on Windows: "explorer", on Linux: "xdg-open"
         await invoke<string>("run_command", {
-          command: "sh",
-          args: ["-c", `open "${folderPath}"`],
+          command: "open",
+          args: [folderPath],
           cwd: "/"
         });
       }
