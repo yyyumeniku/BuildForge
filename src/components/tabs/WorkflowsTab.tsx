@@ -1869,25 +1869,107 @@ export function WorkflowsTab() {
               
               // Upload artifacts if found
               if (artifactPaths.length > 0) {
-                addRunLog({ level: "info", message: `Processing ${artifactPaths.length} artifact(s)...` });
+                addRunLog({ level: "info", message: `Processing ${artifactPaths.length} artifact path(s)...` });
                 
-                // Expand directories to files
+                // Expand directories to files, filtering out source files
                 const filesToUpload: string[] = [];
+                const excludePatterns = [
+                  /node_modules/,
+                  /\.git\//,
+                  /\.cache/,
+                  /\.vscode/,
+                  /\.idea/,
+                  /\.DS_Store/,
+                  /Thumbs\.db/,
+                  /\.map$/,
+                  /\.ts$/,
+                  /\.tsx$/,
+                  /\.jsx$/,
+                  /\.scss$/,
+                  /\.less$/,
+                  /\.lock$/,
+                  /package-lock\.json$/,
+                  /yarn\.lock$/,
+                  /pnpm-lock\.yaml$/,
+                  /\.md$/,
+                  /LICENSE$/,
+                  /README/,
+                  /\.gitignore$/,
+                  /\.env/,
+                  /src\//,  // Exclude source directories
+                  /\.cargo\//,
+                  /Cargo\.lock$/,
+                ];
+                
+                // Binary/release artifact extensions
+                const releaseExtensions = [
+                  '.exe', '.msi', '.app', '.dmg', '.deb', '.rpm', '.AppImage',
+                  '.zip', '.tar.gz', '.tar.xz', '.tar.bz2', '.7z', '.rar',
+                  '.jar', '.war', '.dll', '.so', '.dylib', '.a', '.lib',
+                  '.wasm', '.pdb', '.framework',
+                ];
+                
                 for (const artifactPath of artifactPaths) {
                   const isDir = await invoke<boolean>("is_directory", { path: artifactPath });
                   
                   if (isDir) {
-                    // List all files in directory recursively
-                    addRunLog({ level: "info", message: `Expanding directory: ${artifactPath}` });
+                    addRunLog({ level: "info", message: `Scanning directory: ${artifactPath}` });
                     try {
                       const dirFiles = await invoke<string[]>("list_files", { dir: artifactPath });
-                      filesToUpload.push(...dirFiles);
-                      addRunLog({ level: "info", message: `Found ${dirFiles.length} files in directory` });
+                      // Filter files - prefer release artifacts
+                      const filtered = dirFiles.filter(f => {
+                        // Exclude unwanted patterns
+                        if (excludePatterns.some(p => p.test(f))) return false;
+                        // Include release extensions
+                        if (releaseExtensions.some(ext => f.toLowerCase().endsWith(ext))) return true;
+                        // For non-matching files, check if it's a meaningful artifact
+                        const basename = f.split('/').pop() || '';
+                        // Skip hidden files
+                        if (basename.startsWith('.')) return false;
+                        // Skip common source files in root artifacts
+                        if (/\.(html|svg|css|js|json|txt|ico|png|jpg|jpeg|gif|webp)$/i.test(basename)) {
+                          // Only include these if they're in a proper dist/build folder
+                          return /\/(dist|build|out|bundle|release)\//i.test(f);
+                        }
+                        return true;
+                      });
+                      filesToUpload.push(...filtered);
+                      addRunLog({ level: "info", message: `Found ${filtered.length} artifact files (filtered from ${dirFiles.length})` });
                     } catch (e) {
                       addRunLog({ level: "warn", message: `Failed to list directory: ${e}` });
                     }
                   } else {
-                    filesToUpload.push(artifactPath);
+                    // Single file - check if it's a valid artifact
+                    const basename = artifactPath.split('/').pop() || '';
+                    if (!excludePatterns.some(p => p.test(artifactPath)) && !basename.startsWith('.')) {
+                      filesToUpload.push(artifactPath);
+                    }
+                  }
+                }
+                
+                if (filesToUpload.length === 0) {
+                  addRunLog({ level: "warn", message: "No suitable artifacts found for upload. Looking for release binaries..." });
+                  // Last resort: search for any binary/archive in the build directory
+                  try {
+                    const findResult = await invoke<string>("run_command", {
+                      command: "find",
+                      args: [buildDir, "-type", "f", "(", 
+                        "-name", "*.exe", "-o", "-name", "*.msi", "-o",
+                        "-name", "*.dmg", "-o", "-name", "*.app", "-o",
+                        "-name", "*.deb", "-o", "-name", "*.rpm", "-o",
+                        "-name", "*.AppImage", "-o", "-name", "*.zip", "-o",
+                        "-name", "*.tar.gz", "-o", "-name", "*.tar.xz",
+                        ")", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.git/*"
+                      ],
+                      cwd: buildDir
+                    });
+                    const foundFiles = findResult.split("\n").filter(f => f.trim());
+                    if (foundFiles.length > 0) {
+                      filesToUpload.push(...foundFiles);
+                      addRunLog({ level: "success", message: `Found ${foundFiles.length} release artifact(s)` });
+                    }
+                  } catch {
+                    // No binaries found
                   }
                 }
                 

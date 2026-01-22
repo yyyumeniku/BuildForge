@@ -1097,13 +1097,12 @@ fn get_memory_info() -> (f64, f64) {
             .unwrap_or_default();
         
         // Try to parse "System-wide memory free percentage: X%"
-        let mut used = 0.0;
         for line in memory_pressure.lines() {
             if line.contains("System-wide memory free percentage:") {
                 if let Some(pct_str) = line.split(':').nth(1) {
                     let pct_str = pct_str.trim().trim_end_matches('%');
                     if let Ok(free_pct) = pct_str.parse::<f64>() {
-                        used = total * (1.0 - free_pct / 100.0);
+                        let used = total * (1.0 - free_pct / 100.0);
                         return (total, used);
                     }
                 }
@@ -1136,8 +1135,8 @@ fn get_memory_info() -> (f64, f64) {
         }
         
         // Used = wired + active + compressed (this matches Activity Monitor)
-        used = ((wired + active + compressed) * page_size) as f64 / 1024.0 / 1024.0 / 1024.0;
-        (total, used)
+        let used_mem = ((wired + active + compressed) * page_size) as f64 / 1024.0 / 1024.0 / 1024.0;
+        (total, used_mem)
     }
     
     #[cfg(target_os = "linux")]
