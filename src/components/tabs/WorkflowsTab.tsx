@@ -1,10 +1,20 @@
 import { useRef, useState, useCallback, useEffect } from "react";
-import { Plus, Play, Trash2, GitBranch, Package, TestTube, Upload, GitCommit, Download, X, StopCircle, ChevronDown, Loader2, GitBranchPlus, Zap, Terminal } from "lucide-react";
+import { Plus, Play, Trash2, GitBranch, Package, TestTube, Upload, GitCommit, Download, X, StopCircle, ChevronDown, Loader2, GitBranchPlus, Zap, Terminal, Clock } from "lucide-react";
 import { useAppStore, type WorkflowNode, type WorkflowConnection, type LocalRepo, type BuildSystem, type RunLogEntry } from "../../store/appStore";
 import { invoke } from "@tauri-apps/api/tauri";
+import { timerScheduler, type ScheduleConfig } from "../../lib/timerScheduler";
 
 // Node type definitions with full info
 const NODE_TYPES = [
+  { 
+    id: "timer", 
+    name: "Timer Trigger", 
+    icon: Clock, 
+    color: "#06b6d4",
+    description: "Schedule automatic workflow execution",
+    inputs: [],
+    outputs: ["trigger"]
+  },
   { 
     id: "clone", 
     name: "Clone Repository", 
@@ -329,6 +339,48 @@ export function WorkflowsTab() {
   const workflow = workflows.find(w => w.id === selectedWorkflowId);
   const onlineServers = servers.filter(s => s.status === "online");
   const selectedRepo = workflow?.repoId ? repos.find(r => r.id === workflow.repoId) : null;
+
+  // Setup timer scheduler to trigger workflows
+  useEffect(() => {
+    // Set the callback for when timer triggers
+    timerScheduler.setTriggerCallback((workflowId) => {
+      console.log("Timer triggered workflow:", workflowId);
+      const targetWorkflow = workflows.find(w => w.id === workflowId);
+      if (targetWorkflow) {
+        // Switch to this workflow and run it
+        selectWorkflow(workflowId);
+        // Small delay to ensure UI updates
+        setTimeout(() => {
+          handleRunWorkflow();
+        }, 100);
+      }
+    });
+
+    // Sync timer schedules with workflow nodes
+    workflows.forEach(wf => {
+      const timerNode = wf.nodes.find(n => n.type === "timer");
+      if (timerNode && timerNode.config.enabled) {
+        const scheduleConfig: ScheduleConfig = {
+          mode: timerNode.config.timerMode as "interval" | "daily" | "weekly" | "combined",
+          intervalHours: timerNode.config.intervalHours,
+          dailyTime: timerNode.config.dailyTime,
+          weeklyDay: timerNode.config.weeklyDay,
+          weeklyTime: timerNode.config.weeklyTime,
+          combinedDay: timerNode.config.combinedDay,
+          combinedTime: timerNode.config.combinedTime,
+        };
+        timerScheduler.addSchedule(wf.id, scheduleConfig);
+      } else {
+        // Remove schedule if timer is disabled
+        timerScheduler.removeSchedule(wf.id);
+      }
+    });
+
+    return () => {
+      // Cleanup: remove all schedules on unmount
+      workflows.forEach(wf => timerScheduler.removeSchedule(wf.id));
+    };
+  }, [workflows, selectWorkflow]);
 
   // Center canvas on nodes when workflow changes
   useEffect(() => {
@@ -2270,6 +2322,22 @@ export function WorkflowsTab() {
                             </span>
                           </div>
                         )}
+                        {node.type === "timer" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-cyan-400">
+                              {node.config.timerMode === "interval" && `Every ${node.config.intervalHours || 1}h`}
+                              {node.config.timerMode === "daily" && `Daily at ${node.config.dailyTime || "00:00"}`}
+                              {node.config.timerMode === "weekly" && `${node.config.weeklyDay || "Monday"} at ${node.config.weeklyTime || "00:00"}`}
+                              {node.config.timerMode === "combined" && `${node.config.combinedDay || "Monday"} + ${node.config.combinedTime || "00:00"}`}
+                              {!node.config.timerMode && "Not configured"}
+                            </span>
+                            {node.config.enabled && (
+                              <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-green-500/30 text-green-300">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -2486,6 +2554,136 @@ export function WorkflowsTab() {
               </div>
 
               {/* Node-specific config */}
+              {selectedNodeData.type === "timer" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Schedule Mode</label>
+                    <select
+                      value={selectedNodeData.config.timerMode || "interval"}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "timerMode", e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                    >
+                      <option value="interval">Interval (Every X hours)</option>
+                      <option value="daily">Daily (Specific time)</option>
+                      <option value="weekly">Weekly (Specific day & time)</option>
+                      <option value="combined">Combined (Day + Time)</option>
+                    </select>
+                  </div>
+                  
+                  {selectedNodeData.config.timerMode === "interval" && (
+                    <div className="mt-3">
+                      <label className="block text-xs text-slate-500 mb-1">Interval (hours)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={selectedNodeData.config.intervalHours || 1}
+                        onChange={(e) => updateNodeConfig(selectedNodeData.id, "intervalHours", parseInt(e.target.value))}
+                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                      />
+                      <p className="text-xs text-slate-500 mt-1">Workflow will run every {selectedNodeData.config.intervalHours || 1} hour(s)</p>
+                    </div>
+                  )}
+                  
+                  {selectedNodeData.config.timerMode === "daily" && (
+                    <div className="mt-3">
+                      <label className="block text-xs text-slate-500 mb-1">Time (24h format)</label>
+                      <input
+                        type="time"
+                        value={selectedNodeData.config.dailyTime || "00:00"}
+                        onChange={(e) => updateNodeConfig(selectedNodeData.id, "dailyTime", e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                      />
+                      <p className="text-xs text-slate-500 mt-1">Workflow will run daily at {selectedNodeData.config.dailyTime || "00:00"}</p>
+                    </div>
+                  )}
+                  
+                  {selectedNodeData.config.timerMode === "weekly" && (
+                    <>
+                      <div className="mt-3">
+                        <label className="block text-xs text-slate-500 mb-1">Day of Week</label>
+                        <select
+                          value={selectedNodeData.config.weeklyDay || "Monday"}
+                          onChange={(e) => updateNodeConfig(selectedNodeData.id, "weeklyDay", e.target.value)}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                        >
+                          <option>Monday</option>
+                          <option>Tuesday</option>
+                          <option>Wednesday</option>
+                          <option>Thursday</option>
+                          <option>Friday</option>
+                          <option>Saturday</option>
+                          <option>Sunday</option>
+                        </select>
+                      </div>
+                      <div className="mt-3">
+                        <label className="block text-xs text-slate-500 mb-1">Time (24h format)</label>
+                        <input
+                          type="time"
+                          value={selectedNodeData.config.weeklyTime || "00:00"}
+                          onChange={(e) => updateNodeConfig(selectedNodeData.id, "weeklyTime", e.target.value)}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                        />
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Runs every {selectedNodeData.config.weeklyDay || "Monday"} at {selectedNodeData.config.weeklyTime || "00:00"}
+                      </p>
+                    </>
+                  )}
+                  
+                  {selectedNodeData.config.timerMode === "combined" && (
+                    <>
+                      <div className="mt-3">
+                        <label className="block text-xs text-slate-500 mb-1">Day of Week</label>
+                        <select
+                          value={selectedNodeData.config.combinedDay || "Monday"}
+                          onChange={(e) => updateNodeConfig(selectedNodeData.id, "combinedDay", e.target.value)}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                        >
+                          <option>Monday</option>
+                          <option>Tuesday</option>
+                          <option>Wednesday</option>
+                          <option>Thursday</option>
+                          <option>Friday</option>
+                          <option>Saturday</option>
+                          <option>Sunday</option>
+                        </select>
+                      </div>
+                      <div className="mt-3">
+                        <label className="block text-xs text-slate-500 mb-1">Time (24h format)</label>
+                        <input
+                          type="time"
+                          value={selectedNodeData.config.combinedTime || "00:00"}
+                          onChange={(e) => updateNodeConfig(selectedNodeData.id, "combinedTime", e.target.value)}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white"
+                        />
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Runs on {selectedNodeData.config.combinedDay || "Monday"} + at {selectedNodeData.config.combinedTime || "00:00"}
+                      </p>
+                    </>
+                  )}
+                  
+                  <div className="mt-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedNodeData.config.enabled || false}
+                        onChange={(e) => updateNodeConfig(selectedNodeData.id, "enabled", e.target.checked)}
+                        className="rounded bg-slate-800 border-slate-600"
+                      />
+                      <span className="text-sm text-slate-300">Enable Timer</span>
+                    </label>
+                    <p className="text-xs text-slate-500 mt-1">Workflow will run automatically when enabled</p>
+                  </div>
+                  
+                  <div className="mt-3 p-2 bg-cyan-500/10 border border-cyan-500/20 rounded">
+                    <p className="text-xs text-cyan-400">
+                      Timer will trigger the workflow automatically based on your schedule. Make sure to connect this timer node to your workflow start.
+                    </p>
+                  </div>
+                </>
+              )}
+              
               {selectedNodeData.type === "checkout" && (
                 <>
                   <div>
