@@ -1051,7 +1051,8 @@ export function WorkflowsTab() {
                   
                   // Check for Docker container
                   try {
-                    const containerName = `buildforge-${platform}-builder`;
+                    // Use unified container for all platforms
+                    const containerName = "buildforge-builder";
                     addRunLog({ level: "info", message: `Checking for Docker container: ${containerName}` });
                     
                     // Check if container exists and is running
@@ -1794,19 +1795,33 @@ export function WorkflowsTab() {
               
               // Upload artifacts if found
               if (artifactPaths.length > 0) {
-                addRunLog({ level: "info", message: `Uploading ${artifactPaths.length} artifact(s)...` });
+                addRunLog({ level: "info", message: `Processing ${artifactPaths.length} artifact(s)...` });
+                
+                // Expand directories to files
+                const filesToUpload: string[] = [];
+                for (const artifactPath of artifactPaths) {
+                  const isDir = await invoke<boolean>("is_directory", { path: artifactPath });
+                  
+                  if (isDir) {
+                    // List all files in directory recursively
+                    addRunLog({ level: "info", message: `Expanding directory: ${artifactPath}` });
+                    try {
+                      const dirFiles = await invoke<string[]>("list_files", { path: artifactPath });
+                      filesToUpload.push(...dirFiles);
+                      addRunLog({ level: "info", message: `Found ${dirFiles.length} files in directory` });
+                    } catch (e) {
+                      addRunLog({ level: "warn", message: `Failed to list directory: ${e}` });
+                    }
+                  } else {
+                    filesToUpload.push(artifactPath);
+                  }
+                }
+                
+                addRunLog({ level: "info", message: `Uploading ${filesToUpload.length} file(s)...` });
                 
                 let uploadedCount = 0;
-                for (const artifactPath of artifactPaths.slice(0, 10)) { // Limit to 10 artifacts
+                for (const artifactPath of filesToUpload.slice(0, 50)) { // Limit to 50 files
                   try {
-                    // Check if it's a file or directory
-                    const isDir = await invoke<boolean>("is_directory", { path: artifactPath });
-                    
-                    if (isDir) {
-                      addRunLog({ level: "warn", message: `Skipping directory: ${artifactPath}` });
-                      continue;
-                    }
-                    
                     const fileName = artifactPath.split("/").pop() || "artifact";
                     addRunLog({ level: "info", message: `Uploading: ${fileName}` });
                     

@@ -271,20 +271,16 @@ export function ServersTab() {
     try {
       // Use single unified Docker image for all platforms
       const image = "yyyumeniku/buildforge-docker-image:latest";
-      const platform = "linux/arm64";
       const setupCommands: string[] = []; // Everything pre-built
       
-      const containerName = `buildforge-${os}-builder`;
+      const containerName = "buildforge-builder"; // Unified name for all platforms
       
-      // Pull the image with platform specification
-      addLog("info", `Pulling ${image} for ${platform}...`);
-      const pullArgs = ["pull"];
-      if (platform) pullArgs.push("--platform", platform);
-      pullArgs.push(image);
+      // Pull the image (auto-detects host architecture)
+      addLog("info", `Pulling ${image}...`);
       
       await invoke<string>("run_command", {
         command: "docker",
-        args: pullArgs,
+        args: ["pull", image],
         cwd: "/"
       });
       
@@ -296,9 +292,9 @@ export function ServersTab() {
         "--label", "buildforge",
         "-v", "/tmp/buildforge:/workspace", // Shared volume for zero-copy builds
         "--tmpfs", "/tmp:exec", // Fast tmpfs for build artifacts
+        image,
+        "tail", "-f", "/dev/null"
       ];
-      if (platform) runArgs.push("--platform", platform);
-      runArgs.push(image, "tail", "-f", "/dev/null");
       
       await invoke<string>("run_command", {
         command: "docker",

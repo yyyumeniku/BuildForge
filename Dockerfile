@@ -1,8 +1,8 @@
 # BuildForge Multi-Platform Docker Image
 # Single image with all cross-compilation tools for Windows, Linux, and macOS
-# Optimized for ARM64 Apple Silicon
+# Multi-arch: supports both ARM64 and x86_64
 
-FROM --platform=linux/arm64 debian:bookworm-slim AS base
+FROM debian:bookworm-slim AS base
 
 # Install common dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,9 +30,15 @@ RUN dpkg --add-architecture i386 && \
         wine wine32 wine64 mingw-w64 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install latest Zig for macOS cross-compilation
-RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz | tar -xJ -C /usr/local && \
-    mv /usr/local/zig-linux-aarch64-* /usr/local/zig && \
+# Install latest Zig for macOS cross-compilation (arch-specific)
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIGARCH="aarch64"; \
+    else \
+        ZIGARCH="x86_64"; \
+    fi && \
+    curl -L https://ziglang.org/download/0.13.0/zig-linux-${ZIGARCH}-0.13.0.tar.xz | tar -xJ -C /usr/local && \
+    mv /usr/local/zig-linux-* /usr/local/zig && \
     ln -s /usr/local/zig/zig /usr/local/bin/zig
 
 # Configure Cargo for cross-compilation
