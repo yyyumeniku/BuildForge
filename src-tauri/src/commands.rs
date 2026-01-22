@@ -620,59 +620,54 @@ pub async fn exchange_oauth_code(code: String) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Result<String, String> {
-    use std::process::Stdio;
-    use tokio::process::Command;
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use std::process::{Command, Stdio};
     
-    // Use tokio for async command execution - prevents blocking the UI
-    let mut child = Command::new(&command)
+    eprintln!("[run_command] START: {} {:?} in {}", command, args, cwd);
+    
+    // Validate inputs
+    if command.is_empty() {
+        return Err("Command cannot be empty".to_string());
+    }
+    if cwd.is_empty() {
+        return Err("Working directory cannot be empty".to_string());
+    }
+    
+    // Use blocking I/O but in an async function (Tauri handles the threading)
+    let child = match Command::new(&command)
         .args(&args)
         .current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
-    
-    // Capture output asynchronously
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-    
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
-    
-    // Read stdout in background
-    let stdout_handle = tokio::spawn(async move {
-        let mut lines = Vec::new();
-        while let Ok(Some(line)) = stdout_reader.next_line().await {
-            lines.push(line);
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[run_command] Failed to spawn: {}", e);
+            return Err(format!("Failed to execute command '{}': {}", command, e));
         }
-        lines
-    });
+    };
     
-    // Read stderr in background
-    let stderr_handle = tokio::spawn(async move {
-        let mut lines = Vec::new();
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
-            lines.push(line);
+    eprintln!("[run_command] Process spawned, waiting for output...");
+    
+    // Wait for the process to complete
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[run_command] Failed to wait: {}", e);
+            return Err(format!("Failed to wait for command: {}", e));
         }
-        lines
-    });
+    };
     
-    // Wait for process to complete
-    let status = child.wait().await
-        .map_err(|e| format!("Failed to wait for command: {}", e))?;
+    eprintln!("[run_command] Process completed with status: {}", output.status);
     
-    // Collect output
-    let stdout_lines = stdout_handle.await.unwrap_or_default();
-    let stderr_lines = stderr_handle.await.unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     
-    let stdout = stdout_lines.join("\n");
-    let stderr = stderr_lines.join("\n");
-    
-    if status.success() {
+    if output.status.success() {
+        eprintln!("[run_command] SUCCESS");
         Ok(format!("{}{}", stdout, stderr))
     } else {
-        let exit_code = status.code()
+        let exit_code = output.status.code()
             .map(|c: i32| c.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
@@ -681,6 +676,7 @@ pub async fn run_command(command: String, args: Vec<String>, cwd: String) -> Res
         } else {
             format!("{}\n(exit code {})", combined, exit_code)
         };
+        eprintln!("[run_command] FAILED: {}", error_msg);
         Err(error_msg)
     }
 }
