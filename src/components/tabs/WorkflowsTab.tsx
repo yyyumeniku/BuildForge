@@ -138,7 +138,7 @@ const NODE_TYPES = [
 // Build system detection patterns
 const BUILD_SYSTEMS: { system: BuildSystem; files: string[]; buildCmd: string; testCmd: string }[] = [
   { system: "wails", files: ["wails.json"], buildCmd: "wails build", testCmd: "go test ./..." },
-  { system: "tauri", files: ["src-tauri/Cargo.toml"], buildCmd: "npm run tauri build -- --debug", testCmd: "cargo test" },
+  { system: "tauri", files: ["src-tauri/Cargo.toml"], buildCmd: "npm run tauri:build -- --debug", testCmd: "cargo test" },
   { system: "electron", files: ["package.json"], buildCmd: "npm run build", testCmd: "npm test" },
   { system: "npm", files: ["package.json", "package-lock.json"], buildCmd: "npm run build", testCmd: "npm test" },
   { system: "yarn", files: ["yarn.lock"], buildCmd: "yarn build", testCmd: "yarn test" },
@@ -1386,13 +1386,19 @@ export function WorkflowsTab() {
                   
                   // Define all possible artifact locations for each build system
                   if (detectedSystem === "tauri") {
+                    // Prioritize bundle directories first (contains .dmg, .app, .msi, .deb, etc.)
                     potentialPaths.push(
-                      `${buildDirectory}/src-tauri/target/release`,
-                      `${buildDirectory}/src-tauri/target/debug`,
-                      `${buildDirectory}/src-tauri/target/*/release`,
-                      `${buildDirectory}/src-tauri/target/*/debug`,
                       `${buildDirectory}/src-tauri/target/release/bundle`,
-                      `${buildDirectory}/src-tauri/target/debug/bundle`
+                      `${buildDirectory}/src-tauri/target/debug/bundle`,
+                      `${buildDirectory}/src-tauri/target/release/bundle/macos`,
+                      `${buildDirectory}/src-tauri/target/release/bundle/dmg`,
+                      `${buildDirectory}/src-tauri/target/release/bundle/deb`,
+                      `${buildDirectory}/src-tauri/target/release/bundle/appimage`,
+                      `${buildDirectory}/src-tauri/target/release/bundle/msi`,
+                      `${buildDirectory}/src-tauri/target/release/bundle/nsis`,
+                      `${buildDirectory}/src-tauri/target/*/release/bundle`,
+                      `${buildDirectory}/src-tauri/target/release`,
+                      `${buildDirectory}/src-tauri/target/debug`
                     );
                   } else if (detectedSystem === "cargo") {
                     potentialPaths.push(
@@ -1402,10 +1408,14 @@ export function WorkflowsTab() {
                       `${buildDirectory}/target/*/debug`
                     );
                   } else if (detectedSystem === "npm" || detectedSystem === "yarn" || detectedSystem === "pnpm" || detectedSystem === "electron") {
+                    // Check if it's actually a Tauri app with npm wrapper
                     potentialPaths.push(
+                      `${buildDirectory}/src-tauri/target/release/bundle`,
+                      `${buildDirectory}/src-tauri/target/debug/bundle`,
+                      `${buildDirectory}/dist-electron`,
+                      `${buildDirectory}/out`,
                       `${buildDirectory}/dist`,
                       `${buildDirectory}/build`,
-                      `${buildDirectory}/out`,
                       `${buildDirectory}/output`,
                       `${buildDirectory}/.next`,
                       `${buildDirectory}/dist-electron`
@@ -2007,10 +2017,23 @@ export function WorkflowsTab() {
                       addRunLog({ level: "success", message: `✓ Uploaded: ${fileName}` });
                       uploadedCount++;
                     } else {
-                      addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${JSON.stringify(uploadResponse.data)}` });
+                      const errorData = uploadResponse.data as any;
+                      // Check if asset already exists
+                      if (errorData?.errors?.[0]?.code === "already_exists") {
+                        addRunLog({ level: "info", message: `Asset ${fileName} already exists, skipping` });
+                        uploadedCount++; // Count as successful
+                      } else {
+                        addRunLog({ level: "warn", message: `Failed to upload ${fileName}: ${JSON.stringify(uploadResponse.data)}` });
+                      }
                     }
                   } catch (uploadError: any) {
-                    addRunLog({ level: "warn", message: `Upload error: ${uploadError.message || uploadError}` });
+                    const errorMsg = uploadError.message || uploadError;
+                    if (errorMsg.includes("already_exists")) {
+                      addRunLog({ level: "info", message: `Asset already exists, skipping` });
+                      uploadedCount++;
+                    } else {
+                      addRunLog({ level: "warn", message: `Upload error: ${errorMsg}` });
+                    }
                   }
                 }
                 
