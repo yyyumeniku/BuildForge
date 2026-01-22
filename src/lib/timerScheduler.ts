@@ -1,5 +1,14 @@
-import { Clock } from "lucide-react";
-import React, { useState, useEffect } from "react";
+// Timer Scheduler for workflow automation
+
+export interface ScheduleConfig {
+  mode: "interval" | "daily" | "weekly" | "combined";
+  intervalHours?: number;
+  dailyTime?: string;
+  weeklyDay?: string;
+  weeklyTime?: string;
+  combinedDay?: string;
+  combinedTime?: string;
+}
 
 export interface TimerNodeConfig {
   mode: "interval" | "daily" | "weekly" | "combined";

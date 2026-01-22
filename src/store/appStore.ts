@@ -123,6 +123,20 @@ export interface WorkflowNode {
     actionInputs?: Record<string, string>; // Input values for the action
     commitMessage?: string; // Custom commit message
     targetOS?: "local" | "windows" | "macos" | "linux" | "all"; // Target platform for build
+    // Timer node config
+    timerMode?: "interval" | "daily" | "weekly" | "combined";
+    intervalHours?: number;
+    dailyTime?: string;
+    weeklyDay?: string;
+    weeklyTime?: string;
+    combinedDay?: string;
+    combinedTime?: string;
+    enabled?: boolean;
+    // Download node config
+    url?: string;
+    outputPath?: string;
+    // Custom node config
+    [key: string]: unknown;
   };
 }
 

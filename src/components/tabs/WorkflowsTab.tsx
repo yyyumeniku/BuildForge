@@ -1,8 +1,9 @@
 import { useRef, useState, useCallback, useEffect } from "react";
-import { Plus, Play, Trash2, GitBranch, Package, TestTube, Upload, GitCommit, Download, X, StopCircle, ChevronDown, Loader2, GitBranchPlus, Zap, Terminal, Clock } from "lucide-react";
+import React from "react";
+import { Plus, Play, Trash2, GitBranch, Package, TestTube, Upload, GitCommit, Download, X, StopCircle, ChevronDown, Loader2, GitBranchPlus, Zap, Terminal, Clock, Link, FileDown } from "lucide-react";
 import { useAppStore, type WorkflowNode, type WorkflowConnection, type LocalRepo, type BuildSystem, type RunLogEntry } from "../../store/appStore";
 import { invoke } from "@tauri-apps/api/tauri";
-import { timerScheduler, type ScheduleConfig } from "../../lib/timerScheduler";
+import { timerScheduler } from "../../lib/timerScheduler";
 
 // Node type definitions with full info
 const NODE_TYPES = [
@@ -113,6 +114,24 @@ const NODE_TYPES = [
     description: "Create GitHub release with local build artifacts",
     inputs: ["artifacts"],
     outputs: []
+  },
+  { 
+    id: "link", 
+    name: "Link / URL", 
+    icon: Link, 
+    color: "#3b82f6",
+    description: "Send a URL to connected nodes",
+    inputs: [],
+    outputs: ["url"]
+  },
+  { 
+    id: "download", 
+    name: "Download File", 
+    icon: FileDown, 
+    color: "#10b981",
+    description: "Download a file from URL to local path",
+    inputs: ["url"],
+    outputs: ["filePath"]
   },
 ];
 
@@ -340,6 +359,9 @@ export function WorkflowsTab() {
   const onlineServers = servers.filter(s => s.status === "online");
   const selectedRepo = workflow?.repoId ? repos.find(r => r.id === workflow.repoId) : null;
 
+  // Reference to runWorkflow for timer callback
+  const runWorkflowRef = React.useRef<(() => void) | null>(null);
+
   // Setup timer scheduler to trigger workflows
   useEffect(() => {
     // Set the callback for when timer triggers
@@ -351,7 +373,9 @@ export function WorkflowsTab() {
         selectWorkflow(workflowId);
         // Small delay to ensure UI updates
         setTimeout(() => {
-          handleRunWorkflow();
+          if (runWorkflowRef.current) {
+            runWorkflowRef.current();
+          }
         }, 100);
       }
     });
@@ -360,25 +384,23 @@ export function WorkflowsTab() {
     workflows.forEach(wf => {
       const timerNode = wf.nodes.find(n => n.type === "timer");
       if (timerNode && timerNode.config.enabled) {
-        const scheduleConfig: ScheduleConfig = {
-          mode: timerNode.config.timerMode as "interval" | "daily" | "weekly" | "combined",
+        const timerConfig = {
+          mode: (timerNode.config.timerMode || "interval") as "interval" | "daily" | "weekly" | "combined",
           intervalHours: timerNode.config.intervalHours,
-          dailyTime: timerNode.config.dailyTime,
-          weeklyDay: timerNode.config.weeklyDay,
-          weeklyTime: timerNode.config.weeklyTime,
-          combinedDay: timerNode.config.combinedDay,
-          combinedTime: timerNode.config.combinedTime,
+          time: timerNode.config.dailyTime || timerNode.config.weeklyTime || timerNode.config.combinedTime,
+          dayOfWeek: timerNode.config.weeklyDay || timerNode.config.combinedDay,
+          enabled: true,
         };
-        timerScheduler.addSchedule(wf.id, scheduleConfig);
-      } else {
+        timerScheduler.addSchedule(wf.id, timerNode.id, timerConfig);
+      } else if (timerNode) {
         // Remove schedule if timer is disabled
-        timerScheduler.removeSchedule(wf.id);
+        timerScheduler.removeSchedule(`${wf.id}-${timerNode.id}`);
       }
     });
 
     return () => {
       // Cleanup: remove all schedules on unmount
-      workflows.forEach(wf => timerScheduler.removeSchedule(wf.id));
+      timerScheduler.clearAll();
     };
   }, [workflows, selectWorkflow]);
 
@@ -724,7 +746,7 @@ export function WorkflowsTab() {
   };
 
   // Update node config
-  const updateNodeConfig = (nodeId: string, key: string, value: string | Record<string, string>) => {
+  const updateNodeConfig = (nodeId: string, key: string, value: unknown) => {
     if (!workflow) return;
     
     updateWorkflow(workflow.id, {
@@ -1950,6 +1972,9 @@ export function WorkflowsTab() {
     addRunLog({ level: "warn", message: "Workflow cancelled by user" });
   };
 
+  // Update ref for timer callback
+  runWorkflowRef.current = runWorkflow;
+
   const detectBuildCommand = (repo: LocalRepo): string => {
     const buildInfo = BUILD_SYSTEMS.find(b => b.system === repo.detectedBuildSystem);
     return buildInfo?.buildCmd || "npm run build";
@@ -2338,6 +2363,20 @@ export function WorkflowsTab() {
                             )}
                           </div>
                         )}
+                        {node.type === "link" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-blue-400 font-mono truncate block max-w-[180px]">
+                              {node.config.url || "<no url>"}
+                            </span>
+                          </div>
+                        )}
+                        {node.type === "download" && (
+                          <div className="pt-1">
+                            <span className="text-xs text-emerald-400">
+                              → {node.config.outputPath || "~/Downloads"}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -2679,6 +2718,62 @@ export function WorkflowsTab() {
                   <div className="mt-3 p-2 bg-cyan-500/10 border border-cyan-500/20 rounded">
                     <p className="text-xs text-cyan-400">
                       Timer will trigger the workflow automatically based on your schedule. Make sure to connect this timer node to your workflow start.
+                    </p>
+                  </div>
+                </>
+              )}
+              
+              {selectedNodeData.type === "link" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">URL</label>
+                    <input
+                      type="text"
+                      value={String(selectedNodeData.config.url || "")}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "url", e.target.value)}
+                      placeholder="https://youtube.com/watch?v=..."
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      URL to send to connected nodes (e.g., for downloading)
+                    </p>
+                  </div>
+                  <div className="mt-3 p-2 bg-blue-500/10 border border-blue-500/20 rounded">
+                    <p className="text-xs text-blue-400">
+                      Connect this node to a Download node or Cobalt Tools node to download media.
+                    </p>
+                  </div>
+                </>
+              )}
+              
+              {selectedNodeData.type === "download" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Output Directory</label>
+                    <input
+                      type="text"
+                      value={String(selectedNodeData.config.outputPath || "~/Downloads")}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "outputPath", e.target.value)}
+                      placeholder="~/Downloads"
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Where to save downloaded files
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1 mt-3">Filename (optional)</label>
+                    <input
+                      type="text"
+                      value={String(selectedNodeData.config.filename || "")}
+                      onChange={(e) => updateNodeConfig(selectedNodeData.id, "filename", e.target.value)}
+                      placeholder="Leave empty to use original name"
+                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-white font-mono"
+                    />
+                  </div>
+                  <div className="mt-3 p-2 bg-emerald-500/10 border border-emerald-500/20 rounded">
+                    <p className="text-xs text-emerald-400">
+                      Connect a Link node or any node that outputs a URL to download files.
                     </p>
                   </div>
                 </>
